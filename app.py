@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, redirect, session, jsonify, f
 from werkzeug.security import generate_password_hash, check_password_hash
 from config import Config
 from database.db import get_db_connection, init_db
-from utils.face_utils import register_face, recognize_face
+from utils.face_utils import register_face, recognize_face_with_liveness
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -107,6 +107,29 @@ def admin_dashboard():
                            recent_attendance=recent_attendance)
 
 
+@app.route("/manage_employees", methods=["GET", "POST"])
+def manage_employees():
+    if session.get("role") != "admin":
+        return redirect(url_for("login"))
+        
+    conn = get_db_connection()
+    
+    if request.method == "POST":
+        action = request.form.get("action")
+        user_id = request.form.get("user_id")
+        if action == "delete" and user_id:
+            conn.execute("DELETE FROM attendance WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            conn.commit()
+            flash("Employee deleted successfully.", "success")
+            return redirect(url_for("manage_employees"))
+            
+    employees = conn.execute("SELECT id, employee_id, name, email, department, face_registered FROM users WHERE role='employee'").fetchall()
+    conn.close()
+    
+    return render_template("employees.html", employees=employees)
+
+
 # --- EMPLOYEE ROUTES ---
 @app.route("/employee")
 def employee_dashboard():
@@ -156,10 +179,22 @@ def api_register_face():
 def api_recognize_face():
     data = request.json
     base64_img = data.get("image")
+    liveness_verified = data.get("liveness_verified", False)
     
-    user_id = recognize_face(base64_img)
+    user_id, has_eyes, confidence = recognize_face_with_liveness(base64_img)
     
     if user_id:
+        user_info = get_db_connection().execute("SELECT name, employee_id FROM users WHERE id=?", (user_id,)).fetchone()
+        
+        # If frontend hasn't confirmed a blink yet, just return state to help frontend track it.
+        if not liveness_verified:
+            return jsonify({
+                "success": False, 
+                "recognized": True, 
+                "has_eyes": has_eyes, 
+                "msg": f"Target locked: {user_info['name']}. Please blink to verify liveness."
+            })
+            
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H:%M:%S")
@@ -167,25 +202,23 @@ def api_recognize_face():
         conn = get_db_connection()
         existing = conn.execute("SELECT id FROM attendance WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
         
-        user_info = conn.execute("SELECT name, employee_id FROM users WHERE id=?", (user_id,)).fetchone()
-        
         if not existing:
             conn.execute("INSERT INTO attendance (user_id, date, time, status) VALUES (?, ?, ?, ?)",
                          (user_id, date_str, time_str, "Present"))
             conn.commit()
-            
             conn.close()
             return jsonify({
                 "success": True, 
-                "msg": f"Attendance marked for {user_info['name']}", 
+                "recognized": True,
+                "msg": f"Access Granted. Attendance verified for {user_info['name']}", 
                 "user": user_info['name'],
                 "emp_id": user_info['employee_id']
             })
         else:
             conn.close()
-            return jsonify({"success": True, "msg": f"{user_info['name']}, you have already marked attendance today."})
+            return jsonify({"success": True, "recognized": True, "msg": f"Verification complete. Welcome back, {user_info['name']}."})
     
-    return jsonify({"success": False, "msg": "Face not recognized. Please scan again."})
+    return jsonify({"success": False, "recognized": False, "has_eyes": has_eyes, "msg": "Analyzing facial geometry..."})
 
 if __name__ == "__main__":
     app.run(debug=True)

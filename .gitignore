@@ -1,7 +1,9 @@
 venv/
-.venv/
 __pycache__/
-*.pyc
-*.pkl
+*.sqlite3
 *.db
 .env
+*.jpg
+*.jpeg
+*.png
+face_data/*.jpg

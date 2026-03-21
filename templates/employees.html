@@ -1,33 +1,57 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Employees</title>
-</head>
-<body>
+{% extends 'base.html' %}
+{% block title %}Manage Workforce - SmartFace{% endblock %}
+{% block page_title %}Manage Workforce{% endblock %}
 
-<h1>Employee List</h1>
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+    <h2 style="color: #fff; font-size: 1.5rem; font-weight: 700;">Active Directory</h2>
+    <a href="{{ url_for('register') }}" class="btn-launch" style="padding: 0.6rem 1.2rem; font-size: 0.95rem;">
+        <i class="fa-solid fa-user-plus"></i> Enroll Employee
+    </a>
+</div>
 
-<table border="1" cellpadding="10">
-<tr>
-    <th>ID</th>
-    <th>Name</th>
-    <th>Email</th>
-    <th>Department</th>
-</tr>
-
-{% for emp in employees %}
-<tr>
-    <td>{{emp.id}}</td>
-    <td>{{emp.name}}</td>
-    <td>{{emp.email}}</td>
-    <td>{{emp.department}}</td>
-</tr>
-{% endfor %}
-
-</table>
-
-<br>
-<a href="/admin">Back</a>
-
-</body>
-</html>
+<div class="table-panel" style="margin-top: 0;">
+    <table>
+        <thead>
+            <tr>
+                <th>Emp ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Department</th>
+                <th>AI Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for emp in employees %}
+            <tr>
+                <td style="font-family: monospace; font-weight: 700; color: var(--primary);">{{ emp['employee_id'] }}</td>
+                <td style="font-weight: 600; color: #fff;">{{ emp['name'] }}</td>
+                <td style="color: var(--text-muted);">{{ emp['email'] }}</td>
+                <td><span class="badge" style="background: rgba(255,255,255,0.05); color: var(--text-muted); border: 1px solid var(--border);">{{ emp['department'] }}</span></td>
+                <td>
+                    {% if emp['face_registered'] %}
+                        <span class="badge badge-success">Model Trained</span>
+                    {% else %}
+                        <span class="badge badge-danger">Pending Scan</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="POST" action="{{ url_for('manage_employees') }}" style="display:inline;" onsubmit="return confirm('WARNING: This will delete the employee and all their attendance history. Are you absolutely sure?');">
+                        <input type="hidden" name="action" value="delete">
+                        <input type="hidden" name="user_id" value="{{ emp['id'] }}">
+                        <button type="submit" style="background: transparent; border: 1px solid var(--danger); color: var(--danger); padding: 0.4rem 0.8rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s;">
+                            <i class="fa-solid fa-trash-can"></i> Remove
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 3rem;">No employees registered yet. Click "Enroll Employee" to begin.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

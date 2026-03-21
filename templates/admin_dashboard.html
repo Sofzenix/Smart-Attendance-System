@@ -1,60 +1,125 @@
 {% extends 'base.html' %}
 {% block title %}Admin Dashboard - SmartFace{% endblock %}
+{% block page_title %}Admin Dashboard{% endblock %}
+
+{% block status_bar %}
+<!-- AI STATUS BAR LAYER -->
+<div class="status-bar">
+    <div class="status-item active">
+        <div class="status-dot"></div> AI Engine Active
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-item info">
+        <div class="status-dot"></div> Face Model: LBPH cascades v3
+    </div>
+    <div class="status-separator"></div>
+    <div class="status-item {% if absent_today > 0 %}warning{% else %}active{% endif %}">
+        <div class="status-dot"></div> {{ absent_today }} Employees Absent
+    </div>
+</div>
+{% endblock %}
 
 {% block content %}
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
-    <h2>Admin Dashboard</h2>
-    <span style="color: var(--text-muted); font-weight: 500;">Welcome, {{ session.name }}</span>
-</div>
 
+<!-- 4 GRID STATS -->
 <div class="stats-grid">
     <div class="stat-card">
-        <h3>Total Employees</h3>
-        <div class="value">{{ total_emp }}</div>
+        <div class="stat-icon" style="color: var(--primary);"><i class="fa-solid fa-users fa-lg"></i></div>
+        <div class="stat-title">Total Employees</div>
+        <div class="stat-value glow-primary">{{ total_emp }}</div>
+        <div class="stat-trend">
+            <span class="pill up"><i class="fa-solid fa-arrow-up"></i> 3</span> this month
+        </div>
+        <!-- Fake sparkline SVG -->
+        <svg class="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none">
+            <path d="M0,25 Q10,20 20,25 T40,20 T60,15 T80,20 T100,10" fill="none" stroke="var(--primary)" stroke-width="2"/>
+        </svg>
     </div>
-    <div class="stat-card" style="background: linear-gradient(135deg, var(--success), #059669);">
-        <h3>Present Today</h3>
-        <div class="value">{{ present_today }}</div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="color: var(--success);"><i class="fa-solid fa-square-check fa-lg"></i></div>
+        <div class="stat-title">Present Today</div>
+        <div class="stat-value glow-success">{{ present_today }}</div>
+        <div class="stat-trend">
+            {% set pct = (present_today / total_emp * 100)|round|int if total_emp > 0 else 0 %}
+            <span class="pill up"><i class="fa-solid fa-arrow-up"></i> {{ pct }}%</span> attendance rate
+        </div>
+        <svg class="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none">
+            <path d="M0,20 L20,25 L40,15 L60,10 L80,5 L100,5" fill="none" stroke="var(--success)" stroke-width="2"/>
+        </svg>
     </div>
-    <div class="stat-card" style="background: linear-gradient(135deg, var(--danger), #dc2626);">
-        <h3>Absent Today</h3>
-        <div class="value">{{ absent_today }}</div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="color: var(--danger);"><i class="fa-solid fa-triangle-exclamation fa-lg"></i></div>
+        <div class="stat-title">Absent Today</div>
+        <div class="stat-value glow-danger">{{ absent_today }}</div>
+        <div class="stat-trend">
+             {% set ab_pct = (absent_today / total_emp * 100)|round|int if total_emp > 0 else 0 %}
+            <span class="pill down"><i class="fa-solid fa-arrow-down"></i> {{ ab_pct }}%</span> absence rate
+        </div>
+        <svg class="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none">
+            <path d="M0,10 L20,15 L40,20 L60,15 L80,25 L100,20" fill="none" stroke="var(--danger)" stroke-width="2"/>
+        </svg>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-icon" style="color: var(--warning);"><i class="fa-solid fa-chart-bar fa-lg"></i></div>
+        <div class="stat-title">Avg. Check-In</div>
+        <div class="stat-value glow-warning">09:14</div>
+        <div class="stat-trend">
+            <span class="pill up"><i class="fa-solid fa-arrow-up"></i> 8 min</span> earlier vs last week
+        </div>
+        <svg class="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none">
+            <path d="M0,25 L20,25 L40,20 L60,15 L80,20 L100,15" fill="none" stroke="var(--warning)" stroke-width="2"/>
+        </svg>
     </div>
 </div>
 
-<div class="card">
-    <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
-        <h3 style="font-size: 1.25rem;">Recent Attendance Logs</h3>
-        <a href="{{ url_for('scanner') }}" class="btn btn-sec">Open Kiosk Mode</a>
-    </div>
-    
-    <div class="table-container">
-        <table>
-            <thead>
-                <tr>
-                    <th>Time</th>
-                    <th>Employee ID</th>
-                    <th>Name</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for log in recent_attendance %}
-                <tr>
-                    <td>{{ log['time'] }}</td>
-                    <td style="font-family: monospace; font-weight: 600;">{{ log['employee_id'] }}</td>
-                    <td style="font-weight: 500;">{{ log['name'] }}</td>
-                    <td>
-                        <span class="status-badge status-{{ log['status'].lower() }}">{{ log['status'] }}</span>
-                    </td>
-                </tr>
-                {% else %}
-                <tr>
-                    <td colspan="4" class="text-center" style="color: var(--text-muted);">No attendance records found for today.</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+<!-- ACTIONS GRID -->
+<div class="action-grid">
+    <a href="#" class="action-card">
+        <div class="stat-icon" style="background: rgba(129, 140, 248, 0.1); color: var(--secondary);"><i class="fa-solid fa-dna fa-lg"></i></div>
+        <h3>Register Face</h3>
+        <p>Enroll new employee facial data into the AI model for geometric tracking.</p>
+        <div class="action-link"><i class="fa-solid fa-arrow-right"></i> Open module</div>
+    </a>
+    <a href="{{ url_for('manage_employees') }}" class="action-card">
+        <div class="stat-icon" style="background: rgba(251, 191, 36, 0.1); color: var(--warning);"><i class="fa-solid fa-user-plus fa-lg"></i></div>
+        <h3>Add Employee</h3>
+        <p>Create a new employee profile in the system database for attendance linking.</p>
+        <div class="action-link"><i class="fa-solid fa-arrow-right"></i> Open form</div>
+    </a>
 </div>
+
+<!-- LIVE TABLE -->
+<div class="table-panel">
+    <div style="font-size: 0.85rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 1rem;">Recent Activity Logs</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Employee ID</th>
+                <th>Name</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in recent_attendance %}
+            <tr>
+                <td style="font-family: monospace; color: var(--text-muted);">{{ log['time'] }}</td>
+                <td style="font-weight: 600; color: #fff;">{{ log['employee_id'] }}</td>
+                <td>{{ log['name'] }}</td>
+                <td>
+                    <span class="badge badge-success">{{ log['status'] }}</span>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">No attendance records found for today.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
 {% endblock %}

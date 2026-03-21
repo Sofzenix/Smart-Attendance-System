@@ -1,44 +1,47 @@
 {% extends 'base.html' %}
-
 {% block title %}Register - SmartFace{% endblock %}
 
-{% block content %}
-<div class="auth-container">
-    <div class="card auth-card" style="max-width: 550px;">
-        <h2 class="card-title">Employee Portal Registration</h2>
-        <form method="POST" action="">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                <div class="form-group">
-                    <label for="employee_id">Employee ID</label>
-                    <input type="text" id="employee_id" name="employee_id" class="form-control" placeholder="e.g., EMP001" required>
-                </div>
-                <div class="form-group">
-                    <label for="name">Full Name</label>
-                    <input type="text" id="name" name="name" class="form-control" placeholder="John Doe" required>
-                </div>
-                <div class="form-group">
-                    <label for="email">Email Address</label>
-                    <input type="email" id="email" name="email" class="form-control" placeholder="john@company.com" required>
-                </div>
-                <div class="form-group">
-                    <label for="phone">Phone Number</label>
-                    <input type="text" id="phone" name="phone" class="form-control" placeholder="1234567890">
-                </div>
-                <div class="form-group" style="grid-column: span 2;">
-                    <label for="department">Department</label>
-                    <input type="text" id="department" name="department" class="form-control" placeholder="e.g., IT, HR, Sales">
-                </div>
-                <div class="form-group" style="grid-column: span 2;">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" class="form-control" placeholder="Create a secure password" required>
-                </div>
-            </div>
-            
-            <button type="submit" class="btn btn-primary btn-block mt-3">Create Account</button>
-            <div class="text-center mt-3">
-                <a href="{{ url_for('login') }}" style="color: var(--secondary-color); text-decoration: none;">Already registered? Sign In</a>
-            </div>
-        </form>
+{% block auth_content %}
+<div style="text-align: center; margin-bottom: 2rem;">
+    <h1 style="font-size: 2rem; font-weight: 800; color: #fff; margin-bottom: 0.5rem;">Create Profile</h1>
+    <p style="color: var(--text-muted); font-size: 0.95rem;">Join the SmartFace attendance grid.</p>
+</div>
+
+<form method="POST">
+    <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Employee ID</label>
+        <input type="text" name="employee_id" class="form-control" required placeholder="EMP001">
     </div>
+    <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Full Legal Name</label>
+        <input type="text" name="name" class="form-control" required placeholder="John Doe">
+    </div>
+    <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Work Email</label>
+        <input type="email" name="email" class="form-control" required placeholder="john@domain.com">
+    </div>
+    <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Phone Number</label>
+        <input type="text" name="phone" class="form-control" required placeholder="+1 234 567 8900">
+    </div>
+    <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Department</label>
+        <select name="department" class="form-control" style="appearance: none;">
+            <option value="IT" style="color: #000;">Engineering / IT</option>
+            <option value="HR" style="color: #000;">Human Resources</option>
+            <option value="Sales" style="color: #000;">Sales</option>
+            <option value="Operations" style="color: #000;">Operations</option>
+        </select>
+    </div>
+    <div style="margin-bottom: 2rem;">
+        <label style="display: block; font-size: 0.9rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.5rem;">Secure Password</label>
+        <input type="password" name="password" class="form-control" required placeholder="••••••••">
+    </div>
+    
+    <button type="submit" class="btn-primary">Initialize Profile</button>
+</form>
+
+<div style="text-align: center; margin-top: 1.5rem;">
+    <a href="{{ url_for('login') }}" style="color: var(--primary); font-size: 0.9rem; text-decoration: none; font-weight: 600;">Already registered? Login Here</a>
 </div>
 {% endblock %}

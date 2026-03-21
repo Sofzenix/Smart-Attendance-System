@@ -1,0 +1,27 @@
+body{
+font-family:Segoe UI;
+background:#f5f7fa;
+margin:0;
+padding:0;
+}
+
+h1{
+text-align:center;
+color:#2c3e50;
+}
+
+.stats{
+display:flex;
+justify-content:center;
+gap:30px;
+margin-top:40px;
+}
+
+.box{
+background:white;
+padding:30px;
+border-radius:12px;
+box-shadow:0 4px 10px rgba(0,0,0,0.1);
+text-align:center;
+width:200px;
+}

@@ -1,0 +1,7 @@
+Flask
+opencv-python
+face_recognition
+numpy
+pandas
+flask-login
+flask-mail

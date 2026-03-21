@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+
+{% block title %}Register - SmartFace{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="card auth-card" style="max-width: 550px;">
+        <h2 class="card-title">Employee Portal Registration</h2>
+        <form method="POST" action="">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label for="employee_id">Employee ID</label>
+                    <input type="text" id="employee_id" name="employee_id" class="form-control" placeholder="e.g., EMP001" required>
+                </div>
+                <div class="form-group">
+                    <label for="name">Full Name</label>
+                    <input type="text" id="name" name="name" class="form-control" placeholder="John Doe" required>
+                </div>
+                <div class="form-group">
+                    <label for="email">Email Address</label>
+                    <input type="email" id="email" name="email" class="form-control" placeholder="john@company.com" required>
+                </div>
+                <div class="form-group">
+                    <label for="phone">Phone Number</label>
+                    <input type="text" id="phone" name="phone" class="form-control" placeholder="1234567890">
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                    <label for="department">Department</label>
+                    <input type="text" id="department" name="department" class="form-control" placeholder="e.g., IT, HR, Sales">
+                </div>
+                <div class="form-group" style="grid-column: span 2;">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" class="form-control" placeholder="Create a secure password" required>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block mt-3">Create Account</button>
+            <div class="text-center mt-3">
+                <a href="{{ url_for('login') }}" style="color: var(--secondary-color); text-decoration: none;">Already registered? Sign In</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

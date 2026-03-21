@@ -1,126 +1,60 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Dashboard</title>
+{% extends 'base.html' %}
+{% block title %}Admin Dashboard - SmartFace{% endblock %}
 
-    <link href="https://fonts.googleapis.com/css2?family=Poppins&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-    <style>
-        body {
-            margin: 0;
-            font-family: 'Poppins', sans-serif;
-            display: flex;
-        }
-
-        /* Sidebar */
-        .sidebar {
-            width: 220px;
-            height: 100vh;
-            background: #2c3e50;
-            color: white;
-            padding: 20px;
-        }
-
-        .sidebar h2 {
-            text-align: center;
-        }
-
-        .sidebar a {
-            display: block;
-            color: white;
-            text-decoration: none;
-            margin: 15px 0;
-            padding: 10px;
-            border-radius: 8px;
-        }
-
-        .sidebar a:hover {
-            background: #34495e;
-        }
-
-        /* Main */
-        .main {
-            flex: 1;
-            padding: 20px;
-            background: #f4f6f9;
-        }
-
-        .cards {
-            display: flex;
-            gap: 20px;
-        }
-
-        .card {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            width: 200px;
-            text-align: center;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.1);
-        }
-
-        .chart {
-            width: 400px;
-            margin-top: 30px;
-        }
-    </style>
-</head>
-
-<body>
-
-<!-- Sidebar -->
-<div class="sidebar">
-    <h2>SmartFace</h2>
-    <a href="/admin">Dashboard</a>
-    <a href="/employees">Employees</a>
-    <a href="/add_employee">Add Employee</a>
-    <a href="/mark_attendance">Start Attendance</a>
-    <a href="/logout">Logout</a>
-
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+    <h2>Admin Dashboard</h2>
+    <span style="color: var(--text-muted); font-weight: 500;">Welcome, {{ session.name }}</span>
 </div>
 
-<!-- Main Content -->
-<div class="main">
-
-<h1>Dashboard</h1>
-
-<div class="cards">
-    <div class="card">
-        <h3>Total</h3>
-        <p>{{total}}</p>
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Total Employees</h3>
+        <div class="value">{{ total_emp }}</div>
     </div>
-
-    <div class="card">
-        <h3>Present</h3>
-        <p>{{present}}</p>
+    <div class="stat-card" style="background: linear-gradient(135deg, var(--success), #059669);">
+        <h3>Present Today</h3>
+        <div class="value">{{ present_today }}</div>
     </div>
-
-    <div class="card">
-        <h3>Absent</h3>
-        <p>{{absent}}</p>
+    <div class="stat-card" style="background: linear-gradient(135deg, var(--danger), #dc2626);">
+        <h3>Absent Today</h3>
+        <div class="value">{{ absent_today }}</div>
     </div>
 </div>
 
-<div class="chart">
-    <canvas id="chart"></canvas>
+<div class="card">
+    <div style="display: flex; justify-content: space-between; margin-bottom: 1.5rem;">
+        <h3 style="font-size: 1.25rem;">Recent Attendance Logs</h3>
+        <a href="{{ url_for('scanner') }}" class="btn btn-sec">Open Kiosk Mode</a>
+    </div>
+    
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Employee ID</th>
+                    <th>Name</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in recent_attendance %}
+                <tr>
+                    <td>{{ log['time'] }}</td>
+                    <td style="font-family: monospace; font-weight: 600;">{{ log['employee_id'] }}</td>
+                    <td style="font-weight: 500;">{{ log['name'] }}</td>
+                    <td>
+                        <span class="status-badge status-{{ log['status'].lower() }}">{{ log['status'] }}</span>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="text-center" style="color: var(--text-muted);">No attendance records found for today.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
-
-<script>
-new Chart(document.getElementById("chart"), {
-    type: 'doughnut',
-    data: {
-        labels: ['Present', 'Absent'],
-        datasets: [{
-            data: [{{present}}, {{absent}}],
-            backgroundColor: ['green', 'red']
-        }]
-    }
-});
-</script>
-
-</div>
-
-</body>
-</html>
-
+{% endblock %}

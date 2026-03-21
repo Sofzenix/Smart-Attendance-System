@@ -1,17 +1,25 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Login</title>
-</head>
-<body>
+{% extends 'base.html' %}
 
-<h2>Login Page</h2>
+{% block title %}Login - SmartFace{% endblock %}
 
-<form method="POST">
-    <input type="text" name="username" placeholder="Username" required><br><br>
-    <input type="password" name="password" placeholder="Password" required><br><br>
-    <button type="submit">Login</button>
-</form>
-
-</body>
-</html>
+{% block content %}
+<div class="auth-container">
+    <div class="card auth-card">
+        <h2 class="card-title">Welcome Back</h2>
+        <form method="POST" action="">
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" class="form-control" placeholder="Enter your email" required>
+            </div>
+            <div class="form-group mb-4">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" class="form-control" placeholder="Enter your password" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+            <div class="text-center mt-3">
+                <a href="{{ url_for('register') }}" style="color: var(--secondary-color); text-decoration: none;">Don't have an account? Register</a>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

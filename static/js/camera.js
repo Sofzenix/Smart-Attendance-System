@@ -24,12 +24,22 @@ function stopCamera() {
 
 function captureFrame(videoElementId) {
     const video = document.getElementById(videoElementId);
+    if (!video.videoWidth) return null;
+    
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    
+    // Scale down resolution for lighting fast API backend transmission
+    const MAX_WIDTH = 480;
+    const scale = Math.min(MAX_WIDTH / video.videoWidth, 1.0);
+    
+    canvas.width = video.videoWidth * scale;
+    canvas.height = video.videoHeight * scale;
+    
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.8);
+    
+    // Use lower quality jpeg (0.7) for speed optimization while retaining AI accuracy
+    return canvas.toDataURL('image/jpeg', 0.7);
 }
 
 async function sendFaceToAPI(endpoint, base64Image, btnElement) {

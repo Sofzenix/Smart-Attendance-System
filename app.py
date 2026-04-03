@@ -808,18 +808,7 @@ def api_recognize_face():
                 "msg": f"⚠️ Spoofing detected! ({fail_reason})"
             })
 
-        if not liveness_verified:
-            return jsonify({
-                "success": False, "recognized": True,
-                "liveness_metrics": liveness_metrics,
-                "anti_spoof_score": anti_spoof_score,
-                "spoof_checks": spoof_checks,
-                "confidence": confidence,
-                "msg": f"Target locked: {user_info['name']}. Processing liveness challenge...",
-                "user": user_info['name'],
-                "emp_id": user_info['employee_id'],
-                "department": user_info['department']
-            })
+        # (Removed manual blink/smile challenge here in favor of pure Zero-Click Passive Liveness speed)
 
         now = datetime.now()
         date_str = now.strftime("%Y-%m-%d")

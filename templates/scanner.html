@@ -321,44 +321,24 @@
                         challenge = null; challengePassed = false; actionDetected = false;
                     } else if(res.recognized) {
                         
-                        // Liveness Challenge Logic
-                        if (!challengePassed) {
-                            if (!challenge) {
-                                // Assign random challenge
-                                challenge = Math.random() > 0.5 ? 'blink' : 'smile';
-                                // Change UI label to match 
-                                meterRow.children[2].children[0].innerText = challenge === 'blink' ? 'Blinks' : 'Smiles';
-                            }
-
-                            let metrics = res.liveness_metrics || {};
-                            
-                            if (challenge === 'blink') {
-                                if (metrics.eyes_closed) actionDetected = true;
-                                else if (actionDetected && !metrics.eyes_closed) challengePassed = true; // Complete blink
-                            } else if (challenge === 'smile') {
-                                if (metrics.smiling) challengePassed = true;
-                            }
-
-                            if (!challengePassed) {
-                                let actionText = challenge === 'blink' ? "Please BLINK" : "Please SMILE";
-                                setCamStatus(
-                                    `<i class="fa-solid fa-fingerprint"></i> ${res.user}`,
-                                    `<span style="color:#10b981;font-weight:700;">Challenge: ${actionText} to verify</span>`,
-                                    "scanning"
-                                );
-                            }
-                        }
+                        // We are now utilizing Passive Zero-Click Liveness (Texture/Moire/Depth).
+                        // If we reached here, the Python API validated the spoof_checks successfully.
+                        
+                        // UI Visualizer Update
+                        meterRow.children[2].children[0].innerText = "Liveness";
+                        blinkCounter.innerText = "PASS";
+                        blinkCounter.style.color = '#10b981';
 
                         if(res.success) {
                             let initials = res.user.substring(0, 2).toUpperCase();
                             let avatar = `<div style="width:56px; height:56px; background:linear-gradient(135deg, #10b981, #06b6d4); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:1.4rem; font-weight:800; color:#fff; border:3px solid #fff; box-shadow:0 0 25px rgba(16,185,129,0.6); margin:0 auto 10px;">${initials}</div>`;
-                            setCamStatus(avatar + `<div>Access Granted</div>`, `<span style='color:#34d399; font-weight:700; font-size:1.05rem;'>Welcome back, ${res.user}</span>`, "success");
+                            setCamStatus(avatar + `<div>Access Granted</div>`, `<span style='color:#34d399; font-weight:700; font-size:1.05rem;'>${res.msg}</span>`, "success");
                             
                             setTimeout(() => {
                                 challenge = null; challengePassed = false; actionDetected = false; isProc = false;
                                 setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
                                 setTimeout(engine, 500);
-                            }, 4000);
+                            }, 3500);
                             return;
                         }
                     } else if(res.recognized === false && res.msg !== "Waiting for valid subject...") {

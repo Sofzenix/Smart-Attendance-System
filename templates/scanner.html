@@ -317,7 +317,7 @@
                     if (res.multi_face) {
                         setCamStatus("Multiple Faces", "Only one person at a time please", "alert");
                     } else if(res.spoofing_detected) {
-                        setCamStatus("⚠️ Spoof Detected", "Live presence required. Remove phone/screen.", "alert");
+                        setCamStatus("⚠️ Spoof Detected", res.msg || "Live presence required. Remove phone/screen.", "alert");
                         blinkCount = 0;
                         eyesClosed = false;
                     } else if(res.recognized) {

@@ -826,9 +826,14 @@ table tbody tr:last-child td {
 
 .btn-sm:hover {
     background: rgba(255, 255, 255, 0.08);
-    border-color: var(--border-hover);
+    border-color: rgba(255, 255, 255, 0.2);
     color: var(--text-primary);
-    transform: translateY(-1px);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2), 0 0 10px rgba(255, 255, 255, 0.05);
+}
+
+.btn-sm:active {
+    transform: translateY(0);
 }
 
 /* --- TOAST NOTIFICATIONS --- */

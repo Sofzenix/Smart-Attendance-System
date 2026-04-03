@@ -797,12 +797,15 @@ def api_recognize_face():
 
         # Stricter anti-spoof threshold (raised from 25 to 45)
         if anti_spoof_score < 45:
+            # Gather failed checks for error info
+            failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
+            fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "3D Liveness not verified"
             return jsonify({
                 "success": False, "recognized": True,
                 "spoofing_detected": True,
                 "anti_spoof_score": anti_spoof_score,
                 "spoof_checks": spoof_checks,
-                "msg": "⚠️ Spoofing attempt detected! Live presence required."
+                "msg": f"⚠️ Spoofing detected! ({fail_reason})"
             })
 
         if not liveness_verified:

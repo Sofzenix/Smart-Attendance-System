@@ -27,13 +27,79 @@ def _get_sqlite_connection():
 
 
 def _get_postgres_connection():
-    """PostgreSQL connection for production (Neon)."""
+    """PostgreSQL connection for production (Neon).
+    Returns a wrapper that behaves identically to sqlite3 connections,
+    so ALL existing conn.execute() calls with ? placeholders work as-is.
+    """
     import psycopg2
     import psycopg2.extras
 
-    conn = psycopg2.connect(Config.DATABASE_URL, sslmode='require')
-    conn.autocommit = False
-    return conn
+    raw_conn = psycopg2.connect(Config.DATABASE_URL, sslmode='require')
+    raw_conn.autocommit = False
+    return PostgresConnectionWrapper(raw_conn)
+
+
+class PostgresCursorWrapper:
+    """Makes psycopg2 cursor results behave like sqlite3.Row objects."""
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self._description = cursor.description
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        return PostgresRowWrapper(self._cursor, row)
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        return [PostgresRowWrapper(self._cursor, row) for row in rows]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            raise StopIteration
+        return PostgresRowWrapper(self._cursor, row)
+
+
+class PostgresConnectionWrapper:
+    """Wraps psycopg2 connection to behave exactly like sqlite3 connection.
+    - Auto-converts ? placeholders to %s
+    - Returns dict-like Row objects from .execute().fetchone()
+    - Supports .executescript() via splitting on ;
+    """
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, query, params=None):
+        # Convert sqlite-style ? to postgres-style %s
+        query = query.replace('?', '%s')
+        cur = self._conn.cursor()
+        if params:
+            cur.execute(query, params)
+        else:
+            cur.execute(query)
+        return PostgresCursorWrapper(cur)
+
+    def executescript(self, script):
+        cur = self._conn.cursor()
+        cur.execute(script)
+        return cur
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def cursor(self):
+        return self._conn.cursor()
 
 
 class PostgresRowWrapper:
@@ -123,8 +189,7 @@ def _init_postgres():
         schema = f.read()
 
     conn = _get_postgres_connection()
-    cur = conn.cursor()
-    cur.execute(schema)
+    conn.executescript(schema)
     conn.commit()
 
     _insert_defaults_pg(conn)

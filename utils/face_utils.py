@@ -21,6 +21,7 @@ import base64
 import os
 import json
 import time
+import mediapipe as mp
 from cryptography.fernet import Fernet
 from database.db import get_db_connection, get_setting
 from config import Config
@@ -133,7 +134,12 @@ if os.path.exists(TRAINER_PATH):
 else:
     sync_trainer_from_db()
 
-# --- Multi-Layer Anti-Spoofing & Liveness Models ---
+# Initialize Google MediaPipe BlazeFace (Ultra-fast, immune to bad lighting)
+mp_face_detection = mp.solutions.face_detection
+face_detector = mp_face_detection.FaceDetection(
+    model_selection=0, # 0 for fast/close-range (within 2 meters)
+    min_detection_confidence=0.5
+)
 
 # Legacy fallbacks
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -162,55 +168,54 @@ def data_uri_to_cv2_img(uri):
     return img
 
 
-def detect_faces_dnn(img_bgr, confidence_threshold=0.40):
-    net = get_face_detector()
-    if net is None:
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
-        return list(faces)
-
-    (h, w) = img_bgr.shape[:2]
-    blob = cv2.dnn.blobFromImage(cv2.resize(img_bgr, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
-    net.setInput(blob)
-    detections = net.forward()
-
+def detect_faces_dnn(img_bgr, confidence_threshold=0.50):
+    """
+    Replaced old OpenCV DNN with Google MediaPipe BlazeFace.
+    Phenomenal performance in absolute dark/backlit/silhouetted environments.
+    """
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    results = face_detector.process(img_rgb)
+    
     faces = []
-    for i in range(detections.shape[2]):
-        confidence = detections[0, 0, i, 2]
-        if confidence > confidence_threshold:
-            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-            (x1, y1, x2, y2) = box.astype("int")
-            
-            # PADDING FOR BEARDS: DNNs often cut off the chin/beard.
-            # We add 15% to the bottom coordinates to ensure full facial hair is captured.
-            beard_padding = int((y2 - y1) * 0.15)
-            y2 = min(h, y2 + beard_padding)
-            
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-            face_w, face_h = x2 - x1, y2 - y1
-            if face_w > 20 and face_h > 20:
-                faces.append((x1, y1, face_w, face_h))
+    if results.detections:
+        for detection in results.detections:
+            if detection.score[0] > confidence_threshold:
+                bboxC = detection.location_data.relative_bounding_box
+                ih, iw, _ = img_bgr.shape
+                x = int(bboxC.xmin * iw)
+                y = int(bboxC.ymin * ih)
+                w = int(bboxC.width * iw)
+                h = int(bboxC.height * ih)
+                
+                # Expand bounding box slightly to capture full jaw/chin
+                padding_y = int(h * 0.15)
+                y2 = min(ih, y + h + padding_y)
+                
+                x1, y1 = max(0, x), max(0, y)
+                x2, y2 = min(iw, x + w), y2
+                
+                face_w, face_h = x2 - x1, y2 - y1
+                if face_w > 20 and face_h > 20:
+                    faces.append((x1, y1, face_w, face_h))
     return faces
 
 
 def augment_face(gray_face, size=(200, 200)):
     augmented = []
     resized = cv2.resize(gray_face, size)
-    augmented.append(resized)
-
-    for beta in [-25, -10, 10, 25]:
-        augmented.append(cv2.convertScaleAbs(resized, alpha=1.0, beta=beta))
-
-    for alpha in [0.85, 1.15]:
-        augmented.append(cv2.convertScaleAbs(resized, alpha=alpha, beta=0))
-
-    augmented.append(cv2.GaussianBlur(resized, (3, 3), 0))
-    augmented.append(cv2.equalizeHist(resized))
-
+    
+    # REQUIRED: Equalize training images via CLAHE exactly like prediction images!
+    # This aligns the facial textures and immune LBPH against shadows.
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
-    augmented.append(clahe.apply(resized))
-    augmented.append(cv2.flip(resized, 1))
+    base_normalized = clahe.apply(resized)
+    augmented.append(base_normalized)
+
+    for beta in [-20, 15]:
+        aug = cv2.convertScaleAbs(base_normalized, alpha=1.0, beta=beta)
+        augmented.append(aug)
+
+    augmented.append(cv2.GaussianBlur(base_normalized, (3, 3), 0))
+    augmented.append(cv2.flip(base_normalized, 1))
 
     return augmented
 
@@ -828,7 +833,10 @@ def _full_retrain(extra_faces=None, extra_labels=None):
                     filepath = os.path.join(FACE_DATA_DIR, filename)
                     img = load_encrypted_face(filepath)
                     if img is not None:
-                        img_resized = cv2.resize(img, (200, 200))
+                        # Ensure DB-stored encrypted faces are properly equalized during retrain
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+                        img_normalized = clahe.apply(img)
+                        img_resized = cv2.resize(img_normalized, (200, 200))
                         all_faces.append(img_resized)
                         all_labels.append(label)
                 except Exception:
@@ -844,7 +852,10 @@ def _full_retrain(extra_faces=None, extra_labels=None):
                     filepath = os.path.join(FACE_DATA_DIR, filename)
                     img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
                     if img is not None:
-                        img_resized = cv2.resize(img, (200, 200))
+                        # Ensure fallback data is properly equalized during retrain
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+                        img_normalized = clahe.apply(img)
+                        img_resized = cv2.resize(img_normalized, (200, 200))
                         all_faces.append(img_resized)
                         all_labels.append(label)
                 except (ValueError, IndexError):

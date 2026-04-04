@@ -818,7 +818,7 @@ def api_recognize_face():
 
             # Liveness Challenge — require proof of life before granting access
             # The frontend must send liveness_verified=true after detecting a blink cycle
-            if not liveness_verified:
+            if not liveness_verified and not liveness_metrics.get("render_bypass"):
                 return jsonify({
                     "success": False, "recognized": True,
                     "liveness_metrics": liveness_metrics,

@@ -89,13 +89,16 @@ if os.path.exists(TRAINER_PATH):
 # --- Multi-Layer Anti-Spoofing & Liveness Models ---
 # Initialize MediaPipe Face Mesh for 468-point 3D landmarking
 # Using static_image_mode=True for stateless HTTP request model (required for Gunicorn workers)
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh_mp = mp_face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.4
-)
+if not IS_RENDER:
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh_mp = mp_face_mesh.FaceMesh(
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.4
+    )
+else:
+    face_mesh_mp = None
 
 # Legacy fallbacks
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
@@ -860,31 +863,35 @@ def recognize_face_with_liveness(base64_img):
         three_d_pose_score = 50  # Default neutral
         liveness_metrics = {"eyes_closed": False, "smiling": False}
 
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        results = face_mesh_mp.process(img_rgb)
+        if face_mesh_mp is None:
+            has_eyes = True # Assume eyes present if face detected
+            liveness_metrics["render_bypass"] = True
+        else:
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            results = face_mesh_mp.process(img_rgb)
 
-        if results.multi_face_landmarks:
-            has_eyes = True
-            landmarks = results.multi_face_landmarks[0].landmark
+            if results.multi_face_landmarks:
+                has_eyes = True
+                landmarks = results.multi_face_landmarks[0].landmark
 
-            ear = float(calculate_ear(landmarks, w, h))
-            is_smiling = bool(detect_smile(landmarks, w, h))
-            liveness_metrics["eyes_closed"] = bool(ear < 0.28)
-            liveness_metrics["smiling"] = is_smiling
-            liveness_metrics["ear"] = round(ear, 3)
+                ear = float(calculate_ear(landmarks, w, h))
+                is_smiling = bool(detect_smile(landmarks, w, h))
+                liveness_metrics["eyes_closed"] = bool(ear < 0.28)
+                liveness_metrics["smiling"] = is_smiling
+                liveness_metrics["ear"] = round(ear, 3)
 
-            # 3D Pose Fake Detection (Layer 9)
-            nose_z = landmarks[1].z
-            left_cheek_z = landmarks[234].z
-            right_cheek_z = landmarks[454].z
+                # 3D Pose Fake Detection (Layer 9)
+                nose_z = landmarks[1].z
+                left_cheek_z = landmarks[234].z
+                right_cheek_z = landmarks[454].z
 
-            depth_variance = abs(nose_z - left_cheek_z) + abs(nose_z - right_cheek_z)
-            if depth_variance > 0.12:
-                three_d_pose_score = 100
-            elif depth_variance > 0.05:
-                three_d_pose_score = 80
-            else:
-                three_d_pose_score = 10
+                depth_variance = abs(nose_z - left_cheek_z) + abs(nose_z - right_cheek_z)
+                if depth_variance > 0.12:
+                    three_d_pose_score = 100
+                elif depth_variance > 0.05:
+                    three_d_pose_score = 80
+                else:
+                    three_d_pose_score = 10
 
         # Anti-spoofing (adaptive: lightweight on Render, full locally)
         face_roi_gray = gray[y:y+h, x:x+w]

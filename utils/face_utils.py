@@ -629,6 +629,10 @@ def compute_anti_spoof_score(face_roi_gray, img_bgr, x, y, w, h):
     glare_score = detect_screen_glare(img_bgr, x, y, w, h)
     frequency_score = analyze_frequency_domain(face_roi_gray)
     screen_border_score = detect_screen_border(img_bgr, x, y, w, h)
+    
+    # New specialized screen assassins
+    backlight_score = detect_lcd_backlight(face_roi_gray)
+    micro_blur_score = analyze_micro_texture(face_roi_gray)
 
     checks = {
         "texture": texture_score > 30,
@@ -638,22 +642,30 @@ def compute_anti_spoof_score(face_roi_gray, img_bgr, x, y, w, h):
         "glare_detect": glare_score > 40,
         "frequency": frequency_score > 35,
         "face_consistency": consistency_score > 15,
-        "screen_border": screen_border_score > 20
+        "screen_border": screen_border_score > 20,
+        "lcd_backlight": backlight_score > 25,
+        "micro_texture": micro_blur_score > 30
     }
 
     composite = (
-        texture_score * 0.15 +
-        edge_score * 0.12 +
-        color_score * 0.14 +
-        moire_score * 0.16 +
-        glare_score * 0.12 +
+        texture_score * 0.10 +
+        edge_score * 0.08 +
+        color_score * 0.08 +
+        moire_score * 0.12 +
+        glare_score * 0.10 +
         frequency_score * 0.10 +
-        consistency_score * 0.11 +
-        screen_border_score * 0.10
+        consistency_score * 0.07 +
+        screen_border_score * 0.10 +
+        backlight_score * 0.13 +
+        micro_blur_score * 0.12
     )
 
-    if screen_border_score <= 5:
-        composite = min(composite, 15)
+    if screen_border_score <= 15:
+        composite = min(composite, 25)
+        
+    # Brutal penalty: If ANY screen-specific signature is detected, tank the score.
+    if backlight_score <= 20 or micro_blur_score <= 20 or moire_score <= 25 or glare_score <= 15 or texture_score <= 25:
+        composite = min(composite, 25)
 
     # Track scores across frames for temporal consistency
     spoof_frame_scores.append(int(composite))
@@ -662,14 +674,19 @@ def compute_anti_spoof_score(face_roi_gray, img_bgr, x, y, w, h):
 
     if len(spoof_frame_scores) >= 3:
         avg_score = int(np.mean(spoof_frame_scores))
-        if avg_score < 30:
+        if avg_score < 35:
             composite = min(composite, avg_score)
 
-    # Count how many checks failed
+    # Count how many strict checks failed
     failed_checks = sum(1 for v in checks.values() if not v)
-    fail_threshold = 3 if IS_RENDER else 4
-    if failed_checks >= fail_threshold:
-        composite = min(composite, 20)
+    if failed_checks >= 3:
+        composite = min(composite, 25)
+    if failed_checks >= 4:
+        composite = min(composite, 10)
+
+    # Overwhelming phone border detection directly overrides
+    if not checks["screen_border"] and failed_checks >= 2:
+        composite = 0
 
     return int(composite), checks
 
@@ -894,11 +911,14 @@ def recognize_face_with_liveness(base64_img):
             print(f"[LBPH] Prediction failed: {e}")
             return None, liveness_metrics, 0, anti_spoof_score, spoof_checks
 
-        threshold = 80
+        # Extremely strict threshold for LBPH to eliminate false positives
+        # Default OpenCV is high (e.g. 100), but we need < 55 to prevent impersonation
+        threshold = 55
         print(f"[LBPH] label={label}, distance={distance:.1f}, threshold={threshold}")
 
         if distance < threshold:
-            confidence = max(0, min(100, int((1 - distance / threshold) * 100)))
+            # Map distance (0 to 55) to a confidence percentage (50% to 100%)
+            confidence = max(50, min(100, int((1 - distance / 80) * 100)))
             t_total = int((time.time() - t_start) * 1000)
             print(f"[Pipeline] Total: {t_total}ms | MATCH user={label}")
             return label, liveness_metrics, confidence, anti_spoof_score, spoof_checks

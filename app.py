@@ -803,10 +803,10 @@ def api_recognize_face():
             if not user_info:
                 return jsonify({"success": False, "recognized": False, "msg": "User not found."})
 
-            # Anti-spoof threshold (tuned for real webcam conditions)
-            if anti_spoof_score < 35:
+            # Anti-spoof strict threshold (Raised to 75 to decisively crush phone/photo spoofs)
+            if anti_spoof_score < 75:
                 failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
-                fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "3D Liveness not verified"
+                fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "Liveness not verified"
                 return jsonify({
                     "success": False, "recognized": True,
                     "spoofing_detected": True,

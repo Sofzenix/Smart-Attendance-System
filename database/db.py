@@ -154,6 +154,7 @@ def _init_sqlite():
         profile_photo TEXT,
         face_encoding BLOB,
         face_encodings TEXT,
+        face_embedding TEXT,
         face_registered INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );

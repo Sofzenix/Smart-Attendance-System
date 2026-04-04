@@ -3,6 +3,7 @@ import io
 import csv
 import uuid
 import sqlite3
+import random
 from datetime import datetime, timedelta
 from flask import Flask, render_template, request, redirect, session, jsonify, flash, url_for, Response
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -30,18 +31,17 @@ if not Config.USE_POSTGRES:
         init_db()
     else:
         # Ensure new columns exist (migration for existing DBs)
-        try:
-            conn = get_db_connection()
-            conn.execute("SELECT profile_photo FROM users LIMIT 1")
-            conn.close()
-        except Exception:
-            conn = get_db_connection()
+        conn = get_db_connection()
+        for col, coltype in [('profile_photo', 'TEXT'), ('face_embedding', 'TEXT')]:
             try:
-                conn.execute("ALTER TABLE users ADD COLUMN profile_photo TEXT")
-                conn.commit()
+                conn.execute(f"SELECT {col} FROM users LIMIT 1")
             except Exception:
-                pass
-            conn.close()
+                try:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
+                    conn.commit()
+                except Exception:
+                    pass
+        conn.close()
 else:
     init_db()
 
@@ -759,21 +759,14 @@ def admin_wipe_model():
         return jsonify({"success": False, "msg": "Unauthorized"})
     
     conn = get_db_connection()
-    conn.execute('UPDATE users SET face_registered = 0')
+    conn.execute('UPDATE users SET face_registered = 0, face_embedding = NULL')
     conn.execute('DELETE FROM attendance')
     conn.commit()
     conn.close()
     
-    from database.db import set_setting
-    set_setting('trainer_yml_b64', '')
-    
-    # Also wipe local file instance so next run fetches or stays empty
-    import shutil
-    import os
-    shutil.rmtree('face_data', ignore_errors=True)
-    os.makedirs('face_data', exist_ok=True)
-    if os.path.exists('models/trainer.yml'):
-        os.remove('models/trainer.yml')
+    # Invalidate in-memory embedding cache
+    from utils.face_utils import invalidate_cache
+    invalidate_cache()
         
     return jsonify({"success": True, "msg": "All facial data and models successfully wiped!"})
 
@@ -828,8 +821,8 @@ def api_recognize_face():
             if not user_info:
                 return jsonify({"success": False, "recognized": False, "msg": "User not found."})
 
-            # Anti-spoof strict threshold (Raised to 75 to decisively crush phone/photo spoofs)
-            if anti_spoof_score < 75:
+            # Anti-spoof threshold (new deep pipeline is reliable, 30 avoids false positives)
+            if anti_spoof_score < 30:
                 failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
                 fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "Liveness not verified"
                 return jsonify({
@@ -841,20 +834,56 @@ def api_recognize_face():
                     "msg": f"⚠️ Spoofing detected! ({fail_reason})"
                 })
 
-            # Liveness Challenge — require proof of life before granting access
-            # The frontend must send liveness_verified=true after detecting a blink cycle
-            if not liveness_verified and not liveness_metrics.get("render_bypass"):
+            # Liveness Challenge — RANDOM action to defeat video replay
+            # Videos can fake blinks but can't predict random challenges
+            challenge_types = ['blink', 'turn_left', 'turn_right']
+            if 'challenge_type' not in session or session.get('challenge_user') != user_info['name']:
+                session['challenge_type'] = random.choice(challenge_types)
+                session['challenge_user'] = user_info['name']
+                session['challenge_neutral_seen'] = False
+
+            challenge = session['challenge_type']
+            head_yaw = liveness_metrics.get('head_yaw', 0)
+
+            # Check if challenge completed
+            challenge_passed = False
+            if challenge == 'blink' and liveness_verified:
+                challenge_passed = True
+            elif challenge == 'turn_left':
+                # Must first face center, then turn left
+                if abs(head_yaw) < 0.08:
+                    session['challenge_neutral_seen'] = True
+                if session.get('challenge_neutral_seen') and head_yaw < -0.12:
+                    challenge_passed = True
+            elif challenge == 'turn_right':
+                if abs(head_yaw) < 0.08:
+                    session['challenge_neutral_seen'] = True
+                if session.get('challenge_neutral_seen') and head_yaw > 0.12:
+                    challenge_passed = True
+
+            if not challenge_passed:
+                challenge_msgs = {
+                    'blink': '👁️ Blink your eyes to verify',
+                    'turn_left': '↩️ Turn your head LEFT slowly',
+                    'turn_right': '↪️ Turn your head RIGHT slowly',
+                }
                 return jsonify({
                     "success": False, "recognized": True,
                     "liveness_metrics": liveness_metrics,
                     "anti_spoof_score": anti_spoof_score,
                     "spoof_checks": spoof_checks,
                     "confidence": confidence,
-                    "msg": f"Identity confirmed: {user_info['name']}. Complete liveness check.",
+                    "challenge": challenge,
+                    "msg": f"{user_info['name']} — {challenge_msgs.get(challenge, 'Verify')}",
                     "user": user_info['name'],
                     "emp_id": user_info['employee_id'],
                     "department": user_info['department']
                 })
+
+            # Challenge passed! Clear session
+            session.pop('challenge_type', None)
+            session.pop('challenge_user', None)
+            session.pop('challenge_neutral_seen', None)
 
             now = datetime.now()
             date_str = now.strftime("%Y-%m-%d")

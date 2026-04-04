@@ -22,3 +22,4 @@ static/uploads/profiles/*
 !static/readme/*.png
 !static/readme/*.jpg
 !static/readme/icons/
+models/

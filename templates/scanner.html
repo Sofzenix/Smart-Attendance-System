@@ -268,7 +268,7 @@
         <div><span class="debug-label">Anti-Spoof:</span> <span id="dbgSpoof" class="val">—</span></div>
         <div><span class="debug-label">EAR:</span> <span id="dbgEar" class="val">—</span></div>
         <div><span class="debug-label">Eyes:</span> <span id="dbgEyes" class="val">—</span></div>
-        <div><span class="debug-label">Distance:</span> <span id="dbgDist" class="val">—</span></div>
+        <div><span class="debug-label">Depth:</span> <span id="dbgDist" class="val">—</span></div>
         <div><span class="debug-label">State:</span> <span id="dbgState" class="val">—</span></div>
         <div style="margin-top:6px; border-top:1px solid rgba(255,255,255,0.05); padding-top:6px;">
             <span class="debug-label">API Time:</span> <span id="dbgLatency" class="val">—</span>
@@ -343,6 +343,7 @@
             document.getElementById('dbgSpoof').textContent = res.anti_spoof_score || 0;
             document.getElementById('dbgEar').textContent = lm.ear !== undefined ? lm.ear.toFixed(3) : '—';
             document.getElementById('dbgEyes').textContent = lm.eyes_closed !== undefined ? (lm.eyes_closed ? 'CLOSED' : 'OPEN') : '—';
+            document.getElementById('dbgDist').textContent = lm.depth_score !== undefined ? lm.depth_score : '—';
             document.getElementById('dbgState').textContent = 
                 res.error ? 'ERROR' :
                 res.spoofing_detected ? 'SPOOF' :
@@ -404,13 +405,13 @@
                 frameCounter.textContent = `Frames: ${frameCount}`;
                 
                 const b64 = captureFrame("scanVideo");
-                if(!b64) { isProc = false; setTimeout(engine, 200); return; }
+                if(!b64) { isProc = false; setTimeout(engine, 150); return; }
 
                 const t0 = performance.now();
 
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 50000); // 50s timeout
+                    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout (local)
 
                     const req = await fetch("{{ url_for('api_recognize_face') }}", {
                         method:'POST', headers:{'Content-Type':'application/json'},
@@ -457,18 +458,25 @@
                         }
 
                         let metrics = res.liveness_metrics || {};
-                        
-                        // Automatically bypass blink check on Render free tier
-                        if (metrics.render_bypass) {
-                            blinkDetected = true;
-                        }
-                        
-                        if (!blinkDetected) {
-                            if (metrics.eyes_closed && !eyeWasClosed) {
-                                eyeWasClosed = true;
-                            } else if (!metrics.eyes_closed && eyeWasClosed) {
+                        let challenge = res.challenge || 'blink';
+
+                        // Track challenge-specific conditions
+                        if (challenge === 'blink') {
+                            if (!blinkDetected) {
+                                if (metrics.eyes_closed && !eyeWasClosed) {
+                                    eyeWasClosed = true;
+                                } else if (!metrics.eyes_closed && eyeWasClosed) {
+                                    blinkDetected = true;
+                                    eyeWasClosed = false;
+                                }
+                            }
+                        } else if (challenge === 'turn_left') {
+                            if (metrics.head_yaw < -0.12) {
+                                blinkDetected = true; // reuse flag for "challenge done"
+                            }
+                        } else if (challenge === 'turn_right') {
+                            if (metrics.head_yaw > 0.12) {
                                 blinkDetected = true;
-                                eyeWasClosed = false;
                             }
                         }
 
@@ -486,10 +494,16 @@
                             return;
                         } else if (!blinkDetected) {
                             const confPct = res.confidence || 0;
+                            const challengeIcons = {
+                                'blink': '👁️ Blink your eyes',
+                                'turn_left': '↩️ Turn your head LEFT',
+                                'turn_right': '↪️ Turn your head RIGHT'
+                            };
+                            const prompt = challengeIcons[challenge] || 'Complete challenge';
                             setCamStatus(
                                 `<i class="fa-solid fa-fingerprint"></i> ${res.user}`,
-                                `<span style="color:#10b981; font-weight:700;">` +
-                                `Confidence: ${confPct}% — Verifying identity...</span>`,
+                                `<span style="color:#f59e0b; font-weight:700;">` +
+                                `${prompt} (${confPct}%)</span>`,
                                 "blink"
                             );
                         }
@@ -555,7 +569,7 @@
                 }
                 isProc = false;
             }
-            setTimeout(engine, 200);
+            setTimeout(engine, 150);
         }
         
         // Start with a wake-up ping first, then initialize scanner

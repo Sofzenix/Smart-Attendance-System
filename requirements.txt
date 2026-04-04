@@ -1,12 +1,10 @@
 Flask
-opencv-contrib-python-headless
+opencv-python-headless
 numpy
-pandas
-flask-login
-flask-mail
 Pillow
 APScheduler
 cryptography
 gunicorn
 psycopg2-binary
-mediapipe==0.10.14
+mediapipe>=0.10.14
+onnxruntime

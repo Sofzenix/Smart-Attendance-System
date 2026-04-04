@@ -774,107 +774,126 @@ def api_register_face():
 
 @app.route("/api/recognize_face", methods=["POST"])
 def api_recognize_face():
-    data = request.json
-    base64_img = data.get("image")
-    liveness_verified = data.get("liveness_verified", False)
+    try:
+        data = request.json
+        base64_img = data.get("image")
+        liveness_verified = data.get("liveness_verified", False)
 
-    user_id, liveness_metrics, confidence, anti_spoof_score, spoof_checks = recognize_face_with_liveness(base64_img)
+        if not base64_img:
+            return jsonify({"success": False, "recognized": False, "msg": "No image data received."})
 
-    if spoof_checks.get("multi_face"):
-        return jsonify({
-            "success": False, "recognized": False,
-            "msg": "Multiple faces detected. Only one person at a time.",
-            "multi_face": True
-        })
+        user_id, liveness_metrics, confidence, anti_spoof_score, spoof_checks = recognize_face_with_liveness(base64_img)
 
-    if user_id:
-        conn = get_db_connection()
-        user_info = conn.execute("SELECT name, employee_id, department FROM users WHERE id=?", (user_id,)).fetchone()
-        conn.close()
+        # Debug logging for pipeline diagnostics
+        print(f"[Recognition] user_id={user_id}, confidence={confidence}, "
+              f"anti_spoof={anti_spoof_score}, liveness={liveness_metrics}")
 
-        if not user_info:
-            return jsonify({"success": False, "recognized": False, "msg": "User not found."})
-
-        # Stricter anti-spoof threshold (raised from 25 to 45)
-        if anti_spoof_score < 45:
-            # Gather failed checks for error info
-            failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
-            fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "3D Liveness not verified"
+        if spoof_checks.get("multi_face"):
             return jsonify({
-                "success": False, "recognized": True,
-                "spoofing_detected": True,
-                "anti_spoof_score": anti_spoof_score,
-                "spoof_checks": spoof_checks,
-                "msg": f"⚠️ Spoofing detected! ({fail_reason})"
+                "success": False, "recognized": False,
+                "msg": "Multiple faces detected. Only one person at a time.",
+                "multi_face": True
             })
 
-        # Liveness Challenge — require proof of life before granting access
-        # The frontend must send liveness_verified=true after detecting a blink cycle
-        if not liveness_verified:
+        if user_id:
+            conn = get_db_connection()
+            user_info = conn.execute("SELECT name, employee_id, department FROM users WHERE id=?", (user_id,)).fetchone()
+            conn.close()
+
+            if not user_info:
+                return jsonify({"success": False, "recognized": False, "msg": "User not found."})
+
+            # Anti-spoof threshold (tuned for real webcam conditions)
+            if anti_spoof_score < 35:
+                failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
+                fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "3D Liveness not verified"
+                return jsonify({
+                    "success": False, "recognized": True,
+                    "spoofing_detected": True,
+                    "anti_spoof_score": anti_spoof_score,
+                    "spoof_checks": spoof_checks,
+                    "confidence": confidence,
+                    "msg": f"⚠️ Spoofing detected! ({fail_reason})"
+                })
+
+            # Liveness Challenge — require proof of life before granting access
+            # The frontend must send liveness_verified=true after detecting a blink cycle
+            if not liveness_verified:
+                return jsonify({
+                    "success": False, "recognized": True,
+                    "liveness_metrics": liveness_metrics,
+                    "anti_spoof_score": anti_spoof_score,
+                    "spoof_checks": spoof_checks,
+                    "confidence": confidence,
+                    "msg": f"Identity confirmed: {user_info['name']}. Complete liveness check.",
+                    "user": user_info['name'],
+                    "emp_id": user_info['employee_id'],
+                    "department": user_info['department']
+                })
+
+            now = datetime.now()
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H:%M:%S")
+            status = "Late" if is_late(time_str) else "Present"
+
+            conn = get_db_connection()
+            existing = conn.execute("SELECT id FROM attendance WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
+
+            if not existing:
+                conn.execute("INSERT INTO attendance (user_id, date, time, status, method) VALUES (?, ?, ?, ?, ?)",
+                             (user_id, date_str, time_str, status, 'Face Recognition'))
+                conn.commit()
+                conn.close()
+                return jsonify({
+                    "success": True, "recognized": True,
+                    "msg": f"Access Granted. Attendance verified for {user_info['name']}",
+                    "user": user_info['name'],
+                    "emp_id": user_info['employee_id'],
+                    "department": user_info['department'],
+                    "status": status, "time": time_str,
+                    "anti_spoof_score": anti_spoof_score,
+                    "confidence": confidence
+                })
+            else:
+                conn.close()
+                return jsonify({
+                    "success": True, "recognized": True,
+                    "msg": f"Welcome back, {user_info['name']}. Already checked in today.",
+                    "user": user_info['name'],
+                    "emp_id": user_info['employee_id'],
+                    "department": user_info['department'],
+                    "anti_spoof_score": anti_spoof_score,
+                    "confidence": confidence
+                })
+
+        # Face was detected and analyzed (anti_spoof ran) but not recognized
+        if confidence > 0 or anti_spoof_score > 0:
             return jsonify({
-                "success": False, "recognized": True,
-                "liveness_metrics": liveness_metrics,
+                "success": False, "recognized": False,
+                "face_found": True, "liveness_metrics": liveness_metrics,
                 "anti_spoof_score": anti_spoof_score,
-                "spoof_checks": spoof_checks,
                 "confidence": confidence,
-                "msg": f"Identity confirmed: {user_info['name']}. Complete liveness check.",
-                "user": user_info['name'],
-                "emp_id": user_info['employee_id'],
-                "department": user_info['department']
+                "spoof_checks": spoof_checks,
+                "msg": "Identity Unknown — Please register first"
             })
 
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        time_str = now.strftime("%H:%M:%S")
-        status = "Late" if is_late(time_str) else "Present"
-
-        conn = get_db_connection()
-        existing = conn.execute("SELECT id FROM attendance WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
-
-        if not existing:
-            conn.execute("INSERT INTO attendance (user_id, date, time, status, method) VALUES (?, ?, ?, ?, ?)",
-                         (user_id, date_str, time_str, status, 'Face Recognition'))
-            conn.commit()
-            conn.close()
-            return jsonify({
-                "success": True, "recognized": True,
-                "msg": f"Access Granted. Attendance verified for {user_info['name']}",
-                "user": user_info['name'],
-                "emp_id": user_info['employee_id'],
-                "department": user_info['department'],
-                "status": status, "time": time_str,
-                "anti_spoof_score": anti_spoof_score,
-                "confidence": confidence
-            })
-        else:
-            conn.close()
-            return jsonify({
-                "success": True, "recognized": True,
-                "msg": f"Welcome back, {user_info['name']}. Already checked in today.",
-                "user": user_info['name'],
-                "emp_id": user_info['employee_id'],
-                "department": user_info['department'],
-                "anti_spoof_score": anti_spoof_score,
-                "confidence": confidence
-            })
-
-    # Face was detected and analyzed (anti_spoof ran) but not recognized
-    if confidence > 0 or anti_spoof_score > 0:
         return jsonify({
             "success": False, "recognized": False,
-            "face_found": True, "liveness_metrics": liveness_metrics,
+            "face_found": False,
             "anti_spoof_score": anti_spoof_score,
+            "confidence": 0,
             "spoof_checks": spoof_checks,
-            "msg": "Identity Unknown — Please register first"
+            "msg": "Waiting for valid subject..."
         })
 
-    return jsonify({
-        "success": False, "recognized": False,
-        "face_found": False, "has_eyes": has_eyes,
-        "anti_spoof_score": anti_spoof_score,
-        "spoof_checks": spoof_checks,
-        "msg": "Waiting for valid subject..."
-    })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False, "recognized": False,
+            "msg": f"Recognition engine error: {str(e)}",
+            "error": True
+        }), 500
 
 
 @app.route("/api/edit_attendance", methods=["POST"])

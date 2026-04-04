@@ -172,6 +172,13 @@ def _init_sqlite():
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );
+
+    -- Performance indexes for 500+ employee scale
+    CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    CREATE INDEX IF NOT EXISTS idx_users_department ON users(department);
     """
 
     os.makedirs(os.path.dirname(Config.DATABASE_URI), exist_ok=True)

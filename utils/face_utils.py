@@ -26,6 +26,11 @@ from cryptography.fernet import Fernet
 from database.db import get_db_connection, get_setting
 from config import Config
 
+# Detect if running on Render (limited CPU/RAM) to use lightweight pipeline
+IS_RENDER = bool(os.environ.get('RENDER') or os.environ.get('DATABASE_URL'))
+if IS_RENDER:
+    print("[SmartFace] Running on Render — using optimized lightweight pipeline")
+
 FACE_DATA_DIR = "face_data"
 TRAINER_PATH = os.path.join(FACE_DATA_DIR, "trainer.yml")
 if not os.path.exists(FACE_DATA_DIR):
@@ -82,15 +87,14 @@ if os.path.exists(TRAINER_PATH):
     recognizer.read(TRAINER_PATH)
 
 # --- Multi-Layer Anti-Spoofing & Liveness Models ---
-# Initialize MediaPipe Face Mesh for 468-point 3D landmarking (handles glasses and beards flawlessly)
-# Using static_image_mode=False enables temporal smoothing for video streams — much faster & more reliable
+# Initialize MediaPipe Face Mesh for 468-point 3D landmarking
+# Using static_image_mode=True for stateless HTTP request model (required for Gunicorn workers)
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh_mp = mp_face_mesh.FaceMesh(
-    static_image_mode=False,
+    static_image_mode=True,
     max_num_faces=1,
     refine_landmarks=True,
-    min_detection_confidence=0.4,
-    min_tracking_confidence=0.4
+    min_detection_confidence=0.4
 )
 
 # Legacy fallbacks
@@ -569,59 +573,77 @@ def detect_screen_border(img_bgr, x, y, w, h):
 
 def compute_anti_spoof_score(face_roi_gray, img_bgr, x, y, w, h, has_eyes):
     """
-    10-Layer composite anti-spoofing score.
-    Each layer detects a different aspect of screen/photo spoofing.
-    Rebalanced weights: reduced screen_border (too many false positives on real webcams)
-    and increased consistency/eye weight for more reliable real-face detection.
+    Anti-spoofing score with adaptive pipeline.
+    On Render (limited CPU): runs 5 lightweight layers only (~50ms)
+    On local/powerful servers: runs all 10 layers (~150ms)
     """
     global spoof_frame_scores
 
+    # --- Always run: fast layers (< 5ms each) ---
     texture_score = analyze_texture_lbp(face_roi_gray)
     edge_score = analyze_edge_density(face_roi_gray)
     color_score = analyze_color_temperature(img_bgr, x, y, w, h)
-    moire_score = detect_moire_pattern(face_roi_gray)
-    glare_score = detect_screen_glare(img_bgr, x, y, w, h)
-    frequency_score = analyze_frequency_domain(face_roi_gray)
     consistency_score = check_face_size_consistency(x, y, w, h)
     eye_score = 100 if has_eyes else 0
-    screen_border_score = detect_screen_border(img_bgr, x, y, w, h)
 
-    checks = {
-        "texture": texture_score > 30,
-        "edge_density": edge_score > 20,
-        "color_temp": color_score > 25,
-        "moire_detect": moire_score > 40,
-        "glare_detect": glare_score > 40,
-        "frequency": frequency_score > 35,
-        "face_consistency": consistency_score > 15,
-        "eye_presence": has_eyes,
-        "screen_border": screen_border_score > 20
-    }
+    if IS_RENDER:
+        # Lightweight mode for Render: skip FFT, Moiré, HoughLines (too CPU-heavy)
+        checks = {
+            "texture": texture_score > 30,
+            "edge_density": edge_score > 20,
+            "color_temp": color_score > 25,
+            "face_consistency": consistency_score > 15,
+            "eye_presence": has_eyes,
+        }
 
-    # Weighted composite — rebalanced for real-world webcam reliability
-    # Reduced screen_border weight (0.20→0.10) because webcam frames + monitor edges
-    # behind the person cause massive false positives.
-    # Boosted consistency (0.08→0.14) and eyes (0.12→0.16) which are far more reliable.
-    composite = (
-        texture_score * 0.10 +
-        edge_score * 0.08 +
-        color_score * 0.10 +
-        moire_score * 0.10 +
-        glare_score * 0.08 +
-        frequency_score * 0.08 +
-        consistency_score * 0.14 +
-        eye_score * 0.16 +
-        screen_border_score * 0.10 +
-        # Bonus: if eyes detected AND consistency is good, boost score
-        (6.0 if has_eyes and consistency_score > 30 else 0)
-    )
+        composite = (
+            texture_score * 0.18 +
+            edge_score * 0.14 +
+            color_score * 0.16 +
+            consistency_score * 0.22 +
+            eye_score * 0.30 +
+            (8.0 if has_eyes and consistency_score > 30 else 0)
+        )
+    else:
+        # Full mode: all 10 layers
+        moire_score = detect_moire_pattern(face_roi_gray)
+        glare_score = detect_screen_glare(img_bgr, x, y, w, h)
+        frequency_score = analyze_frequency_domain(face_roi_gray)
+        screen_border_score = detect_screen_border(img_bgr, x, y, w, h)
+
+        checks = {
+            "texture": texture_score > 30,
+            "edge_density": edge_score > 20,
+            "color_temp": color_score > 25,
+            "moire_detect": moire_score > 40,
+            "glare_detect": glare_score > 40,
+            "frequency": frequency_score > 35,
+            "face_consistency": consistency_score > 15,
+            "eye_presence": has_eyes,
+            "screen_border": screen_border_score > 20
+        }
+
+        composite = (
+            texture_score * 0.10 +
+            edge_score * 0.08 +
+            color_score * 0.10 +
+            moire_score * 0.10 +
+            glare_score * 0.08 +
+            frequency_score * 0.08 +
+            consistency_score * 0.14 +
+            eye_score * 0.16 +
+            screen_border_score * 0.10 +
+            (6.0 if has_eyes and consistency_score > 30 else 0)
+        )
+
+        if screen_border_score <= 5:
+            composite = min(composite, 15)
 
     # Track scores across frames for temporal consistency
     spoof_frame_scores.append(int(composite))
     if len(spoof_frame_scores) > MAX_SPOOF_FRAMES:
         spoof_frame_scores.pop(0)
 
-    # If we have enough frames, use average (smooths out noise)
     if len(spoof_frame_scores) >= 3:
         avg_score = int(np.mean(spoof_frame_scores))
         if avg_score < 30:
@@ -629,15 +651,9 @@ def compute_anti_spoof_score(face_roi_gray, img_bgr, x, y, w, h, has_eyes):
 
     # Count how many checks failed
     failed_checks = sum(1 for v in checks.values() if not v)
-
-    # If 4+ checks fail → almost certainly a spoof
-    # (Raised from 3 — real faces often fail 2-3 due to webcam quality variance)
-    if failed_checks >= 4:
+    fail_threshold = 3 if IS_RENDER else 4
+    if failed_checks >= fail_threshold:
         composite = min(composite, 20)
-    
-    # Screen border is a strong signal but only if very clearly detected
-    if screen_border_score <= 5:
-        composite = min(composite, 15)
 
     return int(composite), checks
 
@@ -810,92 +826,98 @@ def _full_retrain(extra_faces=None, extra_labels=None):
 
 def recognize_face_with_liveness(base64_img):
     """
-    Enhanced recognition: DNN detection + LBPH matching + 8-layer anti-spoofing.
+    Enhanced recognition: DNN detection + LBPH matching + anti-spoofing.
+    Auto-adapts pipeline weight for Render (lightweight) vs local (full).
     Returns: (user_id, liveness_metrics, confidence, anti_spoof_score, spoof_checks)
     """
-    img_bgr = data_uri_to_cv2_img(base64_img)
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    faces = detect_faces_dnn(img_bgr)
-
-    if len(faces) == 0:
-        return None, {}, 0, 0, {}
-
-    if len(faces) > 1:
-        return None, {}, 0, 0, {"multi_face": True}
-
-    (x, y, w, h) = faces[0]
-
-    # MediaPipe Face Mesh & Eye Detection (Handles glasses & beards better)
-    has_eyes = False
-    three_d_pose_score = 50 # Default neutral
-    liveness_metrics = {"eyes_closed": False, "smiling": False}
-    
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    results = face_mesh_mp.process(img_rgb)
-    
-    if results.multi_face_landmarks:
-        # We have a valid face mesh
-        has_eyes = True
-        landmarks = results.multi_face_landmarks[0].landmark
-        
-        # Calculate Liveness Metrics (Blinks and Smiles)
-        ear = float(calculate_ear(landmarks, w, h))
-        is_smiling = bool(detect_smile(landmarks, w, h))
-        liveness_metrics["eyes_closed"] = bool(ear < 0.28) # Super-lenient for thick spectacles and lens glare
-        liveness_metrics["smiling"] = is_smiling
-        liveness_metrics["ear"] = round(ear, 3)  # Include raw EAR for debug
-        
-        # Calculate 3D Pose Fake Detection (Layer 9)
-        # Real faces have depth (z-values on nose vs cheeks). Photos have flattened z-values.
-        nose_z = landmarks[1].z   # Nose tip
-        left_cheek_z = landmarks[234].z # Left cheek
-        right_cheek_z = landmarks[454].z # Right cheek
-        
-        depth_variance = abs(nose_z - left_cheek_z) + abs(nose_z - right_cheek_z)
-        # Normal faces have depth_variance > 0.05. Photos (flat screens) have very small depth_variance.
-        if depth_variance > 0.12:
-            three_d_pose_score = 100
-        elif depth_variance > 0.05:
-            three_d_pose_score = 80
-        else:
-            three_d_pose_score = 10 # Flat object (Spoof)
-
-    # 8-Layer + 3D Pose anti-spoofing
-    face_roi_gray = gray[y:y+h, x:x+w]
-    anti_spoof_score, spoof_checks = compute_anti_spoof_score(
-        face_roi_gray, img_bgr, x, y, w, h, has_eyes
-    )
-    
-    # Mix 3D Pose into final spoof checks
-    spoof_checks['3d_pose_depth'] = three_d_pose_score > 30
-    
-    # If 3d pose falls flat, penalize total score
-    if three_d_pose_score <= 10:
-        anti_spoof_score = min(anti_spoof_score, 25)
-
-    if not os.path.exists(TRAINER_PATH):
-        return None, liveness_metrics, 0, anti_spoof_score, spoof_checks
-
-    # Normalize
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
-    face_normalized = clahe.apply(face_roi_gray)
-    face_resized = cv2.resize(face_normalized, (200, 200))
-
-    # LBPH recognition
     try:
-        label, distance = recognizer.predict(face_resized)
+        t_start = time.time()
+        img_bgr = data_uri_to_cv2_img(base64_img)
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        faces = detect_faces_dnn(img_bgr)
+
+        if len(faces) == 0:
+            return None, {}, 0, 0, {}
+
+        if len(faces) > 1:
+            return None, {}, 0, 0, {"multi_face": True}
+
+        (x, y, w, h) = faces[0]
+
+        # MediaPipe Face Mesh & Eye Detection (Handles glasses & beards better)
+        has_eyes = False
+        three_d_pose_score = 50  # Default neutral
+        liveness_metrics = {"eyes_closed": False, "smiling": False}
+
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        results = face_mesh_mp.process(img_rgb)
+
+        if results.multi_face_landmarks:
+            has_eyes = True
+            landmarks = results.multi_face_landmarks[0].landmark
+
+            ear = float(calculate_ear(landmarks, w, h))
+            is_smiling = bool(detect_smile(landmarks, w, h))
+            liveness_metrics["eyes_closed"] = bool(ear < 0.28)
+            liveness_metrics["smiling"] = is_smiling
+            liveness_metrics["ear"] = round(ear, 3)
+
+            # 3D Pose Fake Detection (Layer 9)
+            nose_z = landmarks[1].z
+            left_cheek_z = landmarks[234].z
+            right_cheek_z = landmarks[454].z
+
+            depth_variance = abs(nose_z - left_cheek_z) + abs(nose_z - right_cheek_z)
+            if depth_variance > 0.12:
+                three_d_pose_score = 100
+            elif depth_variance > 0.05:
+                three_d_pose_score = 80
+            else:
+                three_d_pose_score = 10
+
+        # Anti-spoofing (adaptive: lightweight on Render, full locally)
+        face_roi_gray = gray[y:y+h, x:x+w]
+        anti_spoof_score, spoof_checks = compute_anti_spoof_score(
+            face_roi_gray, img_bgr, x, y, w, h, has_eyes
+        )
+
+        spoof_checks['3d_pose_depth'] = three_d_pose_score > 30
+
+        if three_d_pose_score <= 10:
+            anti_spoof_score = min(anti_spoof_score, 25)
+
+        if not os.path.exists(TRAINER_PATH):
+            return None, liveness_metrics, 0, anti_spoof_score, spoof_checks
+
+        # Normalize
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+        face_normalized = clahe.apply(face_roi_gray)
+        face_resized = cv2.resize(face_normalized, (200, 200))
+
+        # LBPH recognition
+        try:
+            label, distance = recognizer.predict(face_resized)
+        except Exception as e:
+            print(f"[LBPH] Prediction failed: {e}")
+            return None, liveness_metrics, 0, anti_spoof_score, spoof_checks
+
+        threshold = 80
+        print(f"[LBPH] label={label}, distance={distance:.1f}, threshold={threshold}")
+
+        if distance < threshold:
+            confidence = max(0, min(100, int((1 - distance / threshold) * 100)))
+            t_total = int((time.time() - t_start) * 1000)
+            print(f"[Pipeline] Total: {t_total}ms | MATCH user={label}")
+            return label, liveness_metrics, confidence, anti_spoof_score, spoof_checks
+
+        rough_confidence = max(0, int((1 - distance / 200) * 50))
+        t_total = int((time.time() - t_start) * 1000)
+        print(f"[Pipeline] Total: {t_total}ms | NO MATCH (distance={distance:.1f})")
+        return None, liveness_metrics, rough_confidence, anti_spoof_score, spoof_checks
+
     except Exception as e:
-        print(f"[LBPH] Prediction failed: {e}")
-        return None, liveness_metrics, 0, anti_spoof_score, spoof_checks
+        import traceback
+        traceback.print_exc()
+        print(f"[Pipeline] CRASH: {e}")
+        return None, {"error": str(e)}, 0, 0, {"pipeline_error": True}
 
-    # Threshold tuned for webcam JPEG quality at 500+ employee scale
-    # LBPH distances are naturally higher with compressed video frames
-    threshold = 80
-    print(f"[LBPH] label={label}, distance={distance:.1f}, threshold={threshold}")
-    
-    if distance < threshold:
-        confidence = max(0, min(100, int((1 - distance / threshold) * 100)))
-        return label, liveness_metrics, confidence, anti_spoof_score, spoof_checks
-
-    rough_confidence = max(0, int((1 - distance / 200) * 50))
-    return None, liveness_metrics, rough_confidence, anti_spoof_score, spoof_checks

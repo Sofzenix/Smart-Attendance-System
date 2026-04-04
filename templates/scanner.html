@@ -393,6 +393,10 @@
             }
         }
 
+        let consecutiveErrors = 0;
+        let coldStartTimer = null;
+        let coldStartSeconds = 0;
+
         async function engine() {
             if(!isProc && vid.readyState === 4) {
                 isProc = true;
@@ -405,16 +409,23 @@
                 const t0 = performance.now();
 
                 try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
                     const req = await fetch("{{ url_for('api_recognize_face') }}", {
                         method:'POST', headers:{'Content-Type':'application/json'},
-                        body: JSON.stringify({image:b64, liveness_verified: blinkDetected})
+                        body: JSON.stringify({image:b64, liveness_verified: blinkDetected}),
+                        signal: controller.signal
                     });
+                    clearTimeout(timeoutId);
+
                     const res = await req.json();
+                    consecutiveErrors = 0; // Reset on success
+                    if (coldStartTimer) { clearInterval(coldStartTimer); coldStartTimer = null; }
 
                     const latency = Math.round(performance.now() - t0);
                     document.getElementById('dbgLatency').textContent = latency + 'ms';
                     
-                    // Update debug panel
                     updateDebug(res);
 
                     if (res.confidence !== undefined || res.anti_spoof_score !== undefined) {
@@ -438,7 +449,6 @@
                         consecutiveRecognitions = 0;
                         lastRecognizedUser = null;
                     } else if(res.recognized) {
-                        // Track consecutive recognitions for stability
                         if (res.user === lastRecognizedUser) {
                             consecutiveRecognitions++;
                         } else {
@@ -446,11 +456,9 @@
                             lastRecognizedUser = res.user;
                         }
 
-                        // Single-blink liveness detection using MediaPipe EAR
                         let metrics = res.liveness_metrics || {};
                         
                         if (!blinkDetected) {
-                            // Track eye close→open transition = 1 blink
                             if (metrics.eyes_closed && !eyeWasClosed) {
                                 eyeWasClosed = true;
                             } else if (!metrics.eyes_closed && eyeWasClosed) {
@@ -481,7 +489,6 @@
                             return;
                         }
                     } else if(res.face_found) {
-                        // Face detected but not recognized — unknown person
                         setCamStatus(
                             "Identity Unknown", 
                             "⚠️ Please <a href='{{ url_for('login') }}' style='color:#10b981; font-weight:bold;'>Register</a> first.",
@@ -496,32 +503,65 @@
                         }, 2500);
                         return;
                     } else {
-                        // No face in frame at all
                         setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
                         eyeWasClosed = false; blinkDetected = false;
                         consecutiveRecognitions = 0; lastRecognizedUser = null;
                     }
                 } catch(e) {
-                    console.error("Scanner engine error:", e);
-                    setCamStatus(
-                        '<i class="fa-solid fa-wifi" style="color:#f59e0b;"></i> Connection Issue',
-                        '<span style="color:#94a3b8;">Retrying...</span>',
-                        "alert"
-                    );
+                    consecutiveErrors++;
+                    console.warn(`[Scanner] API error #${consecutiveErrors}:`, e.message);
+                    
+                    if (consecutiveErrors >= 2) {
+                        // Server is waking up from cold start (Render free tier)
+                        if (!coldStartTimer) {
+                            coldStartSeconds = 0;
+                            coldStartTimer = setInterval(() => {
+                                coldStartSeconds++;
+                                const dots = '.'.repeat((coldStartSeconds % 3) + 1);
+                                setCamStatus(
+                                    '<i class="fa-solid fa-server" style="color:#8b5cf6;"></i> Waking Up Server' + dots,
+                                    `<span style="color:#a78bfa;">Render free tier cold start — ${coldStartSeconds}s elapsed. Please wait ~30-60s.</span>`,
+                                    "scanning"
+                                );
+                            }, 1000);
+                        }
+                        // Back off: don't hammer the server, wait 3 seconds between retries
+                        isProc = false;
+                        setTimeout(engine, 3000);
+                        return;
+                    } else {
+                        setCamStatus(
+                            '<i class="fa-solid fa-wifi" style="color:#f59e0b;"></i> Connecting...',
+                            '<span style="color:#94a3b8;">Establishing connection to AI engine</span>',
+                            "scanning"
+                        );
+                    }
                 }
                 isProc = false;
             }
-            setTimeout(engine, 200);  // 200ms scan interval for snappy response
+            setTimeout(engine, 200);
         }
         
+        // Start with a wake-up ping first, then initialize scanner
         setTimeout(() => {
-            setCamStatus("Initializing AI...", "Calibrating deep learning engine", "scanning");
+            setCamStatus(
+                '<i class="fa-solid fa-microchip" style="color:#10b981;"></i> Initializing AI...',
+                'Connecting to recognition engine',
+                "scanning"
+            );
+            // Send a lightweight ping to wake the server
+            fetch("{{ url_for('api_recognize_face') }}", {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({image: ''})
+            }).catch(() => {});
+            
             setTimeout(() => {
                 setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
                 engine();
-            }, 1200);
+            }, 1500);
         }, 600);
     });
     </script>
 </body>
 </html>
+

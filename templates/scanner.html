@@ -410,7 +410,7 @@
 
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+                    const timeoutId = setTimeout(() => controller.abort(), 50000); // 50s timeout
 
                     const req = await fetch("{{ url_for('api_recognize_face') }}", {
                         method:'POST', headers:{'Content-Type':'application/json'},
@@ -510,17 +510,28 @@
                 } catch(e) {
                     consecutiveErrors++;
                     console.warn(`[Scanner] API error #${consecutiveErrors}:`, e.message);
+
+                    if (e.name === 'AbortError') {
+                        setCamStatus(
+                            '<i class="fa-solid fa-hourglass-half" style="color:#f59e0b;"></i> Processing...',
+                            '<span style="color:#94a3b8;">Free tier processing taking longer than expected...</span>',
+                            "scanning"
+                        );
+                        isProc = false;
+                        setTimeout(engine, 1000);
+                        return;
+                    }
                     
                     if (consecutiveErrors >= 2) {
-                        // Server is waking up from cold start (Render free tier)
+                        // The server may be returning 502s or struggling under load
                         if (!coldStartTimer) {
                             coldStartSeconds = 0;
                             coldStartTimer = setInterval(() => {
                                 coldStartSeconds++;
                                 const dots = '.'.repeat((coldStartSeconds % 3) + 1);
                                 setCamStatus(
-                                    '<i class="fa-solid fa-server" style="color:#8b5cf6;"></i> Waking Up Server' + dots,
-                                    `<span style="color:#a78bfa;">Render free tier cold start — ${coldStartSeconds}s elapsed. Please wait ~30-60s.</span>`,
+                                    '<i class="fa-solid fa-server" style="color:#8b5cf6;"></i> Server Busy' + dots,
+                                    `<span style="color:#a78bfa;">API is taking time due to free tier limits — ${coldStartSeconds}s elapsed. Please wait.</span>`,
                                     "scanning"
                                 );
                             }, 1000);

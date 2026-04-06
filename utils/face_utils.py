@@ -371,7 +371,7 @@ def compute_liveness_metrics(img_bgr, mesh_results):
 
 
 # ============================================================
-#  ANTI-SPOOFING ENGINE (Screen Detection + Texture + Depth)
+#  ANTI-SPOOFING ENGINE v3 — Hardened against phone/screen attacks
 # ============================================================
 
 _spoof_history = []
@@ -381,10 +381,13 @@ _MAX_SPOOF_HISTORY = 8
 def detect_screen_display(img_bgr, face_bbox):
     """
     Detect if face is displayed on a phone/tablet/monitor screen.
-    Three independent physical signals:
-      1. Brightness anomaly — screen emits light, brighter than surroundings
-      2. Rectangular border — phone bezel creates strong straight edges
-      3. Color temperature — screens shift colors toward blue
+    6 independent physical signals for robust detection:
+      1. Brightness anomaly — screen emits unnatural light
+      2. Rectangular border — phone bezel creates straight edges
+      3. Color temperature — screens shift toward blue
+      4. Moiré / frequency — screen pixel grid creates patterns
+      5. Sharpness loss — re-photographed faces lose detail
+      6. Specular reflection — screens reflect light sources
     Returns: (is_screen, screen_evidence 0-100)
     """
     h, w = img_bgr.shape[:2]
@@ -395,8 +398,9 @@ def detect_screen_display(img_bgr, face_bbox):
         return False, 0
 
     screen_evidence = 0
+    debug_signals = {}
 
-    # --- Signal 1: Brightness Contrast ---
+    # --- Signal 1: Brightness Contrast (lowered thresholds) ---
     face_gray = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
     face_brightness = float(np.mean(face_gray))
 
@@ -409,35 +413,66 @@ def detect_screen_display(img_bgr, face_bbox):
     bg_brightness = float(np.mean(corners)) if corners else face_brightness
     brightness_ratio = face_brightness / (bg_brightness + 1e-6)
 
-    if brightness_ratio > 2.5:
-        screen_evidence += 45
-    elif brightness_ratio > 1.8:
-        screen_evidence += 30
+    if brightness_ratio > 2.0:
+        screen_evidence += 40
+        debug_signals['brightness'] = f"STRONG ({brightness_ratio:.1f}x)"
     elif brightness_ratio > 1.4:
-        screen_evidence += 15
+        screen_evidence += 25
+        debug_signals['brightness'] = f"MEDIUM ({brightness_ratio:.1f}x)"
+    elif brightness_ratio > 1.15:
+        screen_evidence += 12
+        debug_signals['brightness'] = f"MILD ({brightness_ratio:.1f}x)"
 
-    # --- Signal 2: Rectangular Border Detection ---
-    pad = int(max(fw, fh) * 0.8)
+    # --- Signal 2: Rectangular Border Detection (SMART — near face edges only) ---
+    # Only count lines that are CLOSE to the face bounding box edges
+    # This filters out random room lines (walls, furniture, door frames)
+    pad = int(max(fw, fh) * 0.5)
     sx1, sy1 = max(0, x1 - pad), max(0, y1 - pad)
     sx2, sy2 = min(w, x2 + pad), min(h, y2 + pad)
-    search_gray = cv2.cvtColor(img_bgr[sy1:sy2, sx1:sx2], cv2.COLOR_BGR2GRAY)
+    search_region = img_bgr[sy1:sy2, sx1:sx2]
+    search_gray = cv2.cvtColor(search_region, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(search_gray, 30, 100)
-    min_line_len = max(min(search_gray.shape[:2]) // 4, 30)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=60,
+    min_line_len = max(min(search_gray.shape[:2]) // 5, 25)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50,
                             minLineLength=min_line_len, maxLineGap=15)
+
+    # Face bbox position RELATIVE to search region
+    face_rel_x1 = x1 - sx1
+    face_rel_y1 = y1 - sy1
+    face_rel_x2 = x2 - sx1
+    face_rel_y2 = y2 - sy1
+    proximity_thresh = max(fw, fh) * 0.25  # lines must be within 25% of face size
+
     if lines is not None:
-        h_count, v_count = 0, 0
+        h_near, v_near = 0, 0
         for line in lines:
             lx1, ly1, lx2, ly2 = line[0]
             angle = abs(np.degrees(np.arctan2(ly2 - ly1, lx2 - lx1)))
-            if angle < 20 or angle > 160:
-                h_count += 1
-            elif 70 < angle < 110:
-                v_count += 1
-        if h_count >= 2 and v_count >= 2:
+            mid_x = (lx1 + lx2) / 2
+            mid_y = (ly1 + ly2) / 2
+
+            if angle < 25 or angle > 155:
+                # Horizontal line — check if near TOP or BOTTOM face edge
+                dist_top = abs(mid_y - face_rel_y1)
+                dist_bot = abs(mid_y - face_rel_y2)
+                if min(dist_top, dist_bot) < proximity_thresh:
+                    h_near += 1
+            elif 65 < angle < 115:
+                # Vertical line — check if near LEFT or RIGHT face edge
+                dist_left = abs(mid_x - face_rel_x1)
+                dist_right = abs(mid_x - face_rel_x2)
+                if min(dist_left, dist_right) < proximity_thresh:
+                    v_near += 1
+
+        if h_near >= 3 and v_near >= 3:
             screen_evidence += 35
-        elif h_count >= 1 and v_count >= 1:
-            screen_evidence += 15
+            debug_signals['borders'] = f"STRONG (H={h_near}, V={v_near})"
+        elif h_near >= 2 and v_near >= 2:
+            screen_evidence += 20
+            debug_signals['borders'] = f"MEDIUM (H={h_near}, V={v_near})"
+        elif h_near >= 1 and v_near >= 1:
+            screen_evidence += 10
+            debug_signals['borders'] = f"MILD (H={h_near}, V={v_near})"
 
     # --- Signal 3: Color Temperature ---
     face_bgr = img_bgr[y1:y2, x1:x2].astype(np.float32)
@@ -445,24 +480,106 @@ def detect_screen_display(img_bgr, face_bbox):
     r_mean = float(np.mean(face_bgr[:, :, 2]))
     blue_ratio = b_mean / (r_mean + 1e-6)
     if blue_ratio > 1.15:
-        screen_evidence += 20
-    elif blue_ratio > 1.0:
-        screen_evidence += 10
+        screen_evidence += 18
+        debug_signals['color_temp'] = f"BLUE ({blue_ratio:.2f})"
+    elif blue_ratio > 1.05:
+        screen_evidence += 8
+        debug_signals['color_temp'] = f"NEUTRAL ({blue_ratio:.2f})"
 
-    is_screen = screen_evidence >= 45
+    # --- Signal 4: Moiré / Frequency Analysis ---
+    try:
+        face_small = cv2.resize(face_gray, (128, 128))
+        f_transform = np.fft.fft2(face_small.astype(np.float32))
+        f_shift = np.fft.fftshift(f_transform)
+        magnitude = np.log1p(np.abs(f_shift))
+
+        center = magnitude.shape[0] // 2
+        low_energy = float(np.mean(magnitude[center-10:center+10, center-10:center+10]))
+        high_energy = float(np.mean(magnitude)) - low_energy
+        hf_ratio = high_energy / (low_energy + 1e-6)
+
+        if hf_ratio > 0.7:
+            screen_evidence += 15
+            debug_signals['moire'] = f"HIGH ({hf_ratio:.2f})"
+        elif hf_ratio > 0.5:
+            screen_evidence += 8
+            debug_signals['moire'] = f"MEDIUM ({hf_ratio:.2f})"
+    except Exception:
+        pass
+
+    # --- Signal 5: Sharpness Loss ---
+    # Threshold lowered: real webcam faces are typically 200-800 Laplacian variance
+    # Phone-screen re-captures are typically <80
+    try:
+        face_lap = cv2.resize(face_gray, (128, 128))
+        laplacian = cv2.Laplacian(face_lap, cv2.CV_64F)
+        lap_var = float(np.var(laplacian))
+
+        if lap_var < 60:
+            screen_evidence += 20
+            debug_signals['sharpness'] = f"BLURRY ({lap_var:.0f})"
+        elif lap_var < 120:
+            screen_evidence += 10
+            debug_signals['sharpness'] = f"SOFT ({lap_var:.0f})"
+    except Exception:
+        pass
+
+    # --- Signal 6: Specular Reflection ---
+    try:
+        face_hsv = cv2.cvtColor(img_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2HSV)
+        v_channel = face_hsv[:, :, 2]
+        s_channel = face_hsv[:, :, 1]
+        bright_mask = (v_channel > 230) & (s_channel < 40)
+        bright_pct = float(np.sum(bright_mask)) / (bright_mask.size + 1e-6) * 100
+
+        if bright_pct > 4.0:
+            screen_evidence += 15
+            debug_signals['reflection'] = f"STRONG ({bright_pct:.1f}%)"
+        elif bright_pct > 2.0:
+            screen_evidence += 8
+            debug_signals['reflection'] = f"MILD ({bright_pct:.1f}%)"
+    except Exception:
+        pass
+
+    # --- Signal 7: Face-to-Frame Edge Contrast ---
+    # Needs high threshold — natural face-to-wall transitions can be 30-50
+    try:
+        border_w = max(5, fw // 10)
+        inner_strip = face_gray[:, :border_w]
+        outer_x = max(0, x1 - border_w)
+        outer_strip = cv2.cvtColor(img_bgr[y1:y2, outer_x:x1], cv2.COLOR_BGR2GRAY) if x1 > border_w else None
+
+        if outer_strip is not None and outer_strip.size > 0:
+            inner_mean = float(np.mean(inner_strip))
+            outer_mean = float(np.mean(outer_strip))
+            edge_contrast = abs(inner_mean - outer_mean)
+
+            if edge_contrast > 70:
+                screen_evidence += 15
+                debug_signals['edge'] = f"SHARP ({edge_contrast:.0f})"
+            elif edge_contrast > 50:
+                screen_evidence += 8
+                debug_signals['edge'] = f"MEDIUM ({edge_contrast:.0f})"
+    except Exception:
+        pass
+
+    is_screen = screen_evidence >= 50  # Requires strong multi-signal evidence
+    print(f"[AntiSpoof] Screen evidence={screen_evidence} signals={debug_signals}")
     return is_screen, min(100, screen_evidence)
 
 
 def compute_anti_spoof_score(depth_score, face_roi_gray, img_bgr, face_bbox):
     """
-    Hardcore anti-spoofing. Screen detection → instant score tank.
+    Hardcore anti-spoofing v3.
+    Screen detection → instant score tank.
+    Combines depth, texture, and screen detection.
     """
     global _spoof_history
 
     # Screen detection (primary defense)
     is_screen, screen_conf = detect_screen_display(img_bgr, face_bbox)
     if is_screen:
-        score = max(0, 20 - screen_conf // 3)
+        score = max(0, 15 - screen_conf // 4)
         _spoof_history.append(score)
         if len(_spoof_history) > _MAX_SPOOF_HISTORY:
             _spoof_history.pop(0)
@@ -490,7 +607,7 @@ def compute_anti_spoof_score(depth_score, face_roi_gray, img_bgr, face_bbox):
         _spoof_history.pop(0)
     if len(_spoof_history) >= 3:
         avg = int(np.mean(_spoof_history))
-        if avg < 30:
+        if avg < 35:
             composite = min(composite, avg)
 
     return composite, False

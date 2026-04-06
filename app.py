@@ -830,8 +830,8 @@ def api_recognize_face():
             if not user_info:
                 return jsonify({"success": False, "recognized": False, "msg": "User not found."})
 
-            # Anti-spoof threshold (new deep pipeline is reliable, 30 avoids false positives)
-            if anti_spoof_score < 30:
+            # Anti-spoof threshold (v3: 7-signal screen detection, 40 catches phones/screens)
+            if anti_spoof_score < 40:
                 failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
                 fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "Liveness not verified"
                 return jsonify({

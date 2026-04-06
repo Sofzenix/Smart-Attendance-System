@@ -20,9 +20,10 @@ def get_db_connection():
 def _get_sqlite_connection():
     """SQLite connection for local development."""
     import sqlite3
-    conn = sqlite3.connect(Config.DATABASE_URI)
+    conn = sqlite3.connect(Config.DATABASE_URI, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
@@ -228,6 +229,7 @@ def _insert_defaults(conn):
         'email_trigger_hour': '18',
         'email_trigger_minute': '0',
         'hr_email': '',
+        'scanner_bg_mode': 'off',
     }
     for key, value in defaults.items():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
@@ -255,6 +257,7 @@ def _insert_defaults_pg(conn):
         'email_trigger_hour': '18',
         'email_trigger_minute': '0',
         'hr_email': '',
+        'scanner_bg_mode': 'off',
     }
     for key, value in defaults.items():
         conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING", (key, value))

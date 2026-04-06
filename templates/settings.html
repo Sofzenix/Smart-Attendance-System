@@ -53,6 +53,47 @@
             </div>
         </div>
 
+        <!-- Scanner Background -->
+        <div class="settings-section">
+            <h3><i class="fa-solid fa-mask" style="color:#ec4899;"></i> Scanner Background</h3>
+            
+            <div class="setting-row">
+                <div class="setting-label">
+                    Background Mode
+                    <small>Control what's shown outside the face oval</small>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:0.5rem;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.82rem; font-weight:500;">
+                        <input type="radio" name="scanner_bg_mode" value="off" {% if settings.scanner_bg_mode == 'off' %}checked{% endif %}
+                               style="accent-color:#10b981; width:16px; height:16px;">
+                        <span style="color:#94a3b8;">Off</span>
+                        <span style="color:#475569; font-size:0.72rem;">— Normal camera view</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.82rem; font-weight:500;">
+                        <input type="radio" name="scanner_bg_mode" value="black" {% if settings.scanner_bg_mode == 'black' %}checked{% endif %}
+                               style="accent-color:#10b981; width:16px; height:16px;">
+                        <span style="color:#fff;">Black</span>
+                        <span style="color:#475569; font-size:0.72rem;">— Only face visible, solid black outside</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.82rem; font-weight:500;">
+                        <input type="radio" name="scanner_bg_mode" value="transparent" {% if settings.scanner_bg_mode == 'transparent' %}checked{% endif %}
+                               style="accent-color:#10b981; width:16px; height:16px;">
+                        <span style="color:#a78bfa;">Transparent</span>
+                        <span style="color:#475569; font-size:0.72rem;">— Face visible, dark transparent outside</span>
+                    </label>
+                </div>
+            </div>
+
+            <div style="margin-top:1rem; padding:0.75rem; background:rgba(236,72,153,0.06); border:1px solid rgba(236,72,153,0.12); border-radius:10px;">
+                <div style="font-size:0.78rem; color:#ec4899; font-weight:600;">
+                    <i class="fa-solid fa-info-circle"></i> Current: {{ settings.scanner_bg_mode | capitalize }} mode
+                    {% if settings.scanner_bg_mode != 'off' %}
+                    <br><span style="margin-left:1.3rem; font-weight:500; color:var(--text-muted);">Only the face inside the target box is visible to the camera</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
         <!-- Email Notifications -->
         <div class="settings-section">
             <h3><i class="fa-solid fa-envelope" style="color:var(--accent-purple);"></i> Email Notifications</h3>

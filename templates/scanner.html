@@ -40,6 +40,16 @@
             object-fit: contain;
             transform: scaleX(-1);
             filter: contrast(1.08) brightness(0.92) saturate(1.15);
+            will-change: transform;
+        }
+
+        /* Background mask canvas — overlays the video for face-only mode */
+        #bgMaskCanvas {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 1;
+            pointer-events: none;
+            display: none;
         }
 
         .vignette {
@@ -97,6 +107,7 @@
             width: 400px; height: 500px;
             z-index: 5;
             display: flex; justify-content: center; align-items: center;
+            will-change: transform;
         }
 
         .bracket {
@@ -104,7 +115,7 @@
             width: 45px; height: 45px;
             border-color: #10b981;
             border-style: solid;
-            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
             box-shadow: 0 0 15px rgba(16, 185, 129, 0.3);
             border-radius: 10px;
         }
@@ -154,15 +165,16 @@
             text-align: center;
             z-index: 10;
             min-width: 300px;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
             box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+            will-change: transform, opacity;
         }
 
         .status-panel.success { border-color: #34d399; background: rgba(6, 78, 59, 0.6); }
         .status-panel.error { border-color: #f87171; background: rgba(127, 29, 29, 0.6); animation: shake 0.5s; }
 
-        .status-title { font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; letter-spacing: 0.3px; }
-        .status-desc { font-size: 0.88rem; color: #94a3b8; font-weight: 400; }
+        .status-title { font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; letter-spacing: 0.3px; transition: all 0.3s ease; }
+        .status-desc { font-size: 0.88rem; color: #94a3b8; font-weight: 400; transition: all 0.3s ease; }
         
         /* Confidence & Score Meter */
         .meter-row {
@@ -174,7 +186,7 @@
         .meter-bar {
             width: 60px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden;
         }
-        .meter-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
+        .meter-fill { height: 100%; border-radius: 2px; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
         .meter-fill.green { background: #10b981; }
         .meter-fill.yellow { background: #f59e0b; }
         .meter-fill.red { background: #f43f5e; }
@@ -232,6 +244,24 @@
             border-radius: 18px;
         }
 
+        /* BG mode indicator badge */
+        .bg-mode-badge {
+            position: absolute;
+            top: 100px; left: 50%;
+            transform: translateX(-50%);
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            padding: 4px 14px;
+            border-radius: 20px;
+            font-size: 0.68rem;
+            font-weight: 600;
+            color: #10b981;
+            z-index: 15;
+            display: none;
+            backdrop-filter: blur(10px);
+        }
+        .bg-mode-badge.active { display: block; }
+
         @media (max-width: 768px) {
             .target-container { width: 260px; height: 340px; }
             .top-nav { padding: 15px 20px; flex-direction: column; gap: 12px; }
@@ -244,7 +274,8 @@
 
     <div id="video-container">
         <video id="scanVideo" autoplay muted playsinline></video>
-        <div class="vignette"></div>
+        <canvas id="bgMaskCanvas"></canvas>
+        <div class="vignette" id="vignetteOverlay"></div>
     </div>
 
     <div class="top-nav">
@@ -277,6 +308,9 @@
 
     <div class="frame-counter" id="frameCounter">Frames: 0</div>
 
+    <!-- BG mode badge -->
+    <div class="bg-mode-badge" id="bgModeBadge"></div>
+
     <div class="target-container" id="targetBox">
         <div class="bracket tl"></div><div class="bracket tr"></div>
         <div class="bracket bl"></div><div class="bracket br"></div>
@@ -299,7 +333,7 @@
             </div>
             <div class="meter">
                 <span>Liveness</span>
-                <span id="blinkCounter" style="color:#f59e0b; font-weight:700;">BLINK</span>
+                <span id="blinkCounter" style="color:#f59e0b; font-weight:700;">LIVE</span>
             </div>
         </div>
     </div>
@@ -321,14 +355,160 @@
         const spoofVal = document.getElementById("spoofVal");
         const debugPanel = document.getElementById("debugPanel");
         const frameCounter = document.getElementById("frameCounter");
+        const bgMaskCanvas = document.getElementById("bgMaskCanvas");
+        const vignetteOverlay = document.getElementById("vignetteOverlay");
+        const bgModeBadge = document.getElementById("bgModeBadge");
 
         let isProc = false;
         let eyeWasClosed = false;
         let blinkDetected = false;
         let frameCount = 0;
-        let consecutiveRecognitions = 0;  // Track consecutive successful recognitions
+        let consecutiveRecognitions = 0;
         let lastRecognizedUser = null;
+        let lastState = 'normal';  // Track previous state for smooth transitions
+        let pollInterval = 200;    // Adaptive — faster when face found
         const blinkCounter = document.getElementById('blinkCounter');
+
+        // ============================================================
+        //  BACKGROUND MASK MODE (from admin settings)
+        // ============================================================
+        const BG_MODE = "{{ scanner_bg_mode | default('off') }}";
+        let bgMaskCtx = null;
+        let bgAnimFrame = null;
+
+        function initBgMask() {
+            if (BG_MODE === 'off') return;
+
+            bgMaskCanvas.style.display = 'block';
+            // In bg mask mode, hide the raw video (we'll draw on canvas)
+            // and hide the vignette (canvas replaces it)
+            vignetteOverlay.style.display = 'none';
+
+            bgMaskCtx = bgMaskCanvas.getContext('2d');
+
+            // Show badge
+            bgModeBadge.classList.add('active');
+            bgModeBadge.textContent = BG_MODE === 'black' ? '● Black BG' : '● Transparent BG';
+
+            renderBgMask();
+        }
+
+        function renderBgMask() {
+            if (BG_MODE === 'off' || !bgMaskCtx) return;
+
+            const vw = vid.videoWidth;
+            const vh = vid.videoHeight;
+            if (!vw || !vh) {
+                bgAnimFrame = requestAnimationFrame(renderBgMask);
+                return;
+            }
+
+            // Match canvas size to container
+            const container = document.getElementById('video-container');
+            const cw = container.clientWidth;
+            const ch = container.clientHeight;
+            if (bgMaskCanvas.width !== cw || bgMaskCanvas.height !== ch) {
+                bgMaskCanvas.width = cw;
+                bgMaskCanvas.height = ch;
+            }
+
+            const ctx = bgMaskCtx;
+
+            // Calculate where video is rendered (object-fit: contain)
+            const videoAspect = vw / vh;
+            const containerAspect = cw / ch;
+            let drawW, drawH, drawX, drawY;
+            if (videoAspect > containerAspect) {
+                drawW = cw;
+                drawH = cw / videoAspect;
+                drawX = 0;
+                drawY = (ch - drawH) / 2;
+            } else {
+                drawH = ch;
+                drawW = ch * videoAspect;
+                drawX = (cw - drawW) / 2;
+                drawY = 0;
+            }
+
+            // Get target box position (the reticle)
+            const tRect = targetBox.getBoundingClientRect();
+            const cx = tRect.left + tRect.width / 2;
+            const cy = tRect.top + tRect.height / 2;
+            const rx = tRect.width / 2 * 0.85;  // Slight inset for oval
+            const ry = tRect.height / 2 * 0.85;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, cw, ch);
+
+            if (BG_MODE === 'black') {
+                // Draw the mirrored video first
+                ctx.save();
+                ctx.translate(cw, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
+                ctx.restore();
+
+                // Now mask: draw black outside the oval
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-in';
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                // Draw feathered edge around oval
+                ctx.save();
+                ctx.globalCompositeOperation = 'destination-over';
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, cw, ch);
+                ctx.restore();
+
+            } else if (BG_MODE === 'transparent') {
+                // Semi-transparent: show video everywhere but darken outside oval
+                ctx.save();
+                ctx.translate(cw, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
+                ctx.restore();
+
+                // Dark overlay outside oval
+                ctx.save();
+                ctx.globalCompositeOperation = 'source-atop';
+
+                // Draw darkening layer everywhere
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+                ctx.fillRect(0, 0, cw, ch);
+
+                // Cut the oval back to clear (reveal original video in oval)
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+
+                // Re-draw video inside oval only
+                ctx.save();
+                ctx.beginPath();
+                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+                ctx.clip();
+                ctx.translate(cw, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
+                ctx.restore();
+            }
+
+            bgAnimFrame = requestAnimationFrame(renderBgMask);
+        }
+
+        // Init bg mask when video is ready
+        vid.addEventListener('loadeddata', () => {
+            if (BG_MODE !== 'off') {
+                // Hide the raw video element since canvas replaces it
+                vid.style.opacity = '0';
+                vid.style.position = 'absolute';
+                setTimeout(initBgMask, 100);
+            }
+        });
 
         // Debug toggle with D key
         document.addEventListener('keydown', (e) => {
@@ -372,6 +552,11 @@
         }
 
         function setCamStatus(title, desc, state) {
+            // Debounce: don't re-apply the same state rapidly
+            if (state === lastState && sTitle.innerHTML === title && sDesc.innerHTML === desc) {
+                return;
+            }
+
             sTitle.innerHTML = title;
             sDesc.innerHTML = desc;
             
@@ -392,6 +577,8 @@
             } else {
                 meterRow.style.display = 'none';
             }
+
+            lastState = state;
         }
 
         let consecutiveErrors = 0;
@@ -405,13 +592,13 @@
                 frameCounter.textContent = `Frames: ${frameCount}`;
                 
                 const b64 = captureFrame("scanVideo");
-                if(!b64) { isProc = false; setTimeout(engine, 150); return; }
+                if(!b64) { isProc = false; setTimeout(engine, pollInterval); return; }
 
                 const t0 = performance.now();
 
                 try {
                     const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout (local)
+                    const timeoutId = setTimeout(() => controller.abort(), 15000);
 
                     const req = await fetch("{{ url_for('api_recognize_face') }}", {
                         method:'POST', headers:{'Content-Type':'application/json'},
@@ -421,7 +608,7 @@
                     clearTimeout(timeoutId);
 
                     const res = await req.json();
-                    consecutiveErrors = 0; // Reset on success
+                    consecutiveErrors = 0;
                     if (coldStartTimer) { clearInterval(coldStartTimer); coldStartTimer = null; }
 
                     const latency = Math.round(performance.now() - t0);
@@ -440,16 +627,20 @@
                             `<span style="color:#f87171;">${res.msg || 'Recognition engine failed'}</span>`,
                             "alert"
                         );
+                        pollInterval = 500;  // Slow down on errors
                     } else if (res.multi_face) {
                         setCamStatus("Multiple Faces", "Only one person at a time please", "alert");
                         consecutiveRecognitions = 0;
                         lastRecognizedUser = null;
+                        pollInterval = 300;
                     } else if(res.spoofing_detected) {
                         setCamStatus("⚠️ Spoof Detected", res.msg || "Live presence required.", "alert");
                         eyeWasClosed = false; blinkDetected = false;
                         consecutiveRecognitions = 0;
                         lastRecognizedUser = null;
+                        pollInterval = 300;
                     } else if(res.recognized) {
+                        pollInterval = 150;  // Speed up when face is recognized
                         if (res.user === lastRecognizedUser) {
                             consecutiveRecognitions++;
                         } else {
@@ -460,7 +651,12 @@
                         let metrics = res.liveness_metrics || {};
                         let challenge = res.challenge || 'blink';
 
-                        // Track challenge-specific conditions
+                        // Track challenge — MIRRORED LABELS
+                        // The video is CSS-mirrored (scaleX(-1)), so:
+                        //   raw yaw < 0 = camera's right = user sees LEFT in mirror
+                        //   raw yaw > 0 = camera's left  = user sees RIGHT in mirror
+                        // The backend challenge 'turn_left' expects yaw < -0.12
+                        // which means: user turns LEFT as they see it on screen ✓
                         if (challenge === 'blink') {
                             if (!blinkDetected) {
                                 if (metrics.eyes_closed && !eyeWasClosed) {
@@ -471,10 +667,14 @@
                                 }
                             }
                         } else if (challenge === 'turn_left') {
+                            // Backend says turn_left → yaw < -0.12
+                            // In mirror view: user's left = yaw negative ✓
                             if (metrics.head_yaw < -0.12) {
-                                blinkDetected = true; // reuse flag for "challenge done"
+                                blinkDetected = true;
                             }
                         } else if (challenge === 'turn_right') {
+                            // Backend says turn_right → yaw > 0.12
+                            // In mirror view: user's right = yaw positive ✓
                             if (metrics.head_yaw > 0.12) {
                                 blinkDetected = true;
                             }
@@ -489,15 +689,23 @@
                                 eyeWasClosed = false; blinkDetected = false; isProc = false;
                                 consecutiveRecognitions = 0; lastRecognizedUser = null;
                                 setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
+                                pollInterval = 300;
                                 setTimeout(engine, 500);
                             }, 3500);
                             return;
                         } else if (!blinkDetected) {
                             const confPct = res.confidence || 0;
+                            // FIXED: Show correct direction as user sees in mirror
+                            // The backend sends 'turn_left'/'turn_right' based on what
+                            // the user should do. Since yaw detection matches the mirror
+                            // view, labels are correct. But we need arrow icons to point
+                            // the right way in the MIRRORED view:
+                            //   turn_left  → user turns left (← as they see it)
+                            //   turn_right → user turns right (→ as they see it)
                             const challengeIcons = {
                                 'blink': '👁️ Blink your eyes',
-                                'turn_left': '↩️ Turn your head LEFT',
-                                'turn_right': '↪️ Turn your head RIGHT'
+                                'turn_left': '← Turn your head LEFT',
+                                'turn_right': '→ Turn your head RIGHT'
                             };
                             const prompt = challengeIcons[challenge] || 'Complete challenge';
                             setCamStatus(
@@ -515,6 +723,7 @@
                         );
                         eyeWasClosed = false; blinkDetected = false;
                         consecutiveRecognitions = 0; lastRecognizedUser = null;
+                        pollInterval = 500;
                         setTimeout(() => {
                             isProc = false;
                             setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
@@ -525,6 +734,7 @@
                         setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
                         eyeWasClosed = false; blinkDetected = false;
                         consecutiveRecognitions = 0; lastRecognizedUser = null;
+                        pollInterval = 400;  // Slower when no face detected
                     }
                 } catch(e) {
                     consecutiveErrors++;
@@ -537,12 +747,12 @@
                             "scanning"
                         );
                         isProc = false;
+                        pollInterval = 1000;
                         setTimeout(engine, 1000);
                         return;
                     }
                     
                     if (consecutiveErrors >= 2) {
-                        // The server may be returning 502s or struggling under load
                         if (!coldStartTimer) {
                             coldStartSeconds = 0;
                             coldStartTimer = setInterval(() => {
@@ -555,8 +765,8 @@
                                 );
                             }, 1000);
                         }
-                        // Back off: don't hammer the server, wait 3 seconds between retries
                         isProc = false;
+                        pollInterval = 3000;
                         setTimeout(engine, 3000);
                         return;
                     } else {
@@ -569,7 +779,7 @@
                 }
                 isProc = false;
             }
-            setTimeout(engine, 150);
+            setTimeout(engine, pollInterval);
         }
         
         // Start with a wake-up ping first, then initialize scanner
@@ -594,4 +804,3 @@
     </script>
 </body>
 </html>
-

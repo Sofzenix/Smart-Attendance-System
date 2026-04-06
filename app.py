@@ -95,7 +95,8 @@ def is_late(time_str):
 
 @app.route("/")
 def home():
-    return render_template("scanner.html")
+    bg_mode = get_setting('scanner_bg_mode', 'off')
+    return render_template("scanner.html", scanner_bg_mode=bg_mode)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -180,10 +181,11 @@ def register():
             conn.commit()
             flash("Registration successful! Please login.", "success")
             return redirect(url_for("login"))
-        except sqlite3.IntegrityError:
-            flash("Employee ID or Email already exists.", "danger")
-        except Exception as e:
-            flash("Registration failed. Please try again.", "danger")
+        except Exception as ie:
+            if 'IntegrityError' in type(ie).__name__ or 'unique' in str(ie).lower() or 'duplicate' in str(ie).lower():
+                flash("Employee ID or Email already exists.", "danger")
+            else:
+                flash("Registration failed. Please try again.", "danger")
         finally:
             conn.close()
 
@@ -570,6 +572,11 @@ def settings():
         email_minute = request.form.get("email_trigger_minute", "0")
         hr_email_val = (request.form.get("hr_email", "") or "").strip().lower()
 
+        # Scanner background mode
+        scanner_bg = request.form.get("scanner_bg_mode", "off")
+        if scanner_bg not in ('off', 'black', 'transparent'):
+            scanner_bg = 'off'
+
         set_setting('late_cutoff_hour', late_hour)
         set_setting('late_cutoff_minute', late_minute)
         set_setting('company_name', company_name)
@@ -578,6 +585,7 @@ def settings():
         set_setting('email_trigger_hour', email_hour)
         set_setting('email_trigger_minute', email_minute)
         set_setting('hr_email', hr_email_val)
+        set_setting('scanner_bg_mode', scanner_bg)
 
         # Update scheduler
         global scheduler
@@ -610,6 +618,7 @@ def settings():
         'email_trigger_hour': get_setting('email_trigger_hour', '18'),
         'email_trigger_minute': get_setting('email_trigger_minute', '0'),
         'hr_email': get_setting('hr_email', ''),
+        'scanner_bg_mode': get_setting('scanner_bg_mode', 'off'),
     }
 
     return render_template("settings.html", settings=current_settings)

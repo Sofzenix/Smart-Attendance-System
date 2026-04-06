@@ -43,21 +43,14 @@
             will-change: transform;
         }
 
-        /* Background mask canvas — overlays the video for face-only mode */
-        #bgMaskCanvas {
-            position: absolute;
-            top: 0; left: 0; width: 100%; height: 100%;
-            z-index: 1;
-            pointer-events: none;
-            display: none;
-        }
-
         .vignette {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%;
             background: radial-gradient(circle, transparent 35%, rgba(0,0,0,0.85) 100%);
             z-index: 2; pointer-events: none;
         }
+        /* Hide vignette when bg mask is active */
+        .vignette.bg-hidden { display: none; }
 
         .top-nav {
             position: absolute;
@@ -108,6 +101,15 @@
             z-index: 5;
             display: flex; justify-content: center; align-items: center;
             will-change: transform;
+            border-radius: 16px;
+        }
+
+        /* ===== BACKGROUND MASK — box-shadow covers everything outside the rectangle ===== */
+        .target-container.bg-mask-black {
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 1);
+        }
+        .target-container.bg-mask-transparent {
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.85);
         }
 
         .bracket {
@@ -147,10 +149,15 @@
             border-color: #34d399; box-shadow: 0 0 30px var(--success-glow);
             transform: scale(1.05); border-radius: 18px;
         }
+        .target-container.success.bg-mask-black  { box-shadow: 0 0 30px var(--success-glow), 0 0 0 9999px rgba(0,0,0,1); }
+        .target-container.success.bg-mask-transparent { box-shadow: 0 0 30px var(--success-glow), 0 0 0 9999px rgba(0,0,0,0.85); }
+
         .target-container.alert .bracket { 
             border-color: #f87171; box-shadow: 0 0 30px var(--danger-glow);
             transform: scale(0.95);
         }
+        .target-container.alert.bg-mask-black { box-shadow: 0 0 30px var(--danger-glow), 0 0 0 9999px rgba(0,0,0,1); }
+        .target-container.alert.bg-mask-transparent { box-shadow: 0 0 30px var(--danger-glow), 0 0 0 9999px rgba(0,0,0,0.85); }
 
         /* Status Panel */
         .status-panel {
@@ -274,7 +281,6 @@
 
     <div id="video-container">
         <video id="scanVideo" autoplay muted playsinline></video>
-        <canvas id="bgMaskCanvas"></canvas>
         <div class="vignette" id="vignetteOverlay"></div>
     </div>
 
@@ -355,7 +361,6 @@
         const spoofVal = document.getElementById("spoofVal");
         const debugPanel = document.getElementById("debugPanel");
         const frameCounter = document.getElementById("frameCounter");
-        const bgMaskCanvas = document.getElementById("bgMaskCanvas");
         const vignetteOverlay = document.getElementById("vignetteOverlay");
         const bgModeBadge = document.getElementById("bgModeBadge");
 
@@ -365,150 +370,26 @@
         let frameCount = 0;
         let consecutiveRecognitions = 0;
         let lastRecognizedUser = null;
-        let lastState = 'normal';  // Track previous state for smooth transitions
-        let pollInterval = 200;    // Adaptive — faster when face found
+        let lastState = 'normal';
+        let pollInterval = 200;
         const blinkCounter = document.getElementById('blinkCounter');
 
         // ============================================================
-        //  BACKGROUND MASK MODE (from admin settings)
+        //  BACKGROUND MASK MODE — Pure CSS approach (box-shadow)
         // ============================================================
         const BG_MODE = "{{ scanner_bg_mode | default('off') }}";
-        let bgMaskCtx = null;
-        let bgAnimFrame = null;
 
-        function initBgMask() {
-            if (BG_MODE === 'off') return;
-
-            bgMaskCanvas.style.display = 'block';
-            // In bg mask mode, hide the raw video (we'll draw on canvas)
-            // and hide the vignette (canvas replaces it)
-            vignetteOverlay.style.display = 'none';
-
-            bgMaskCtx = bgMaskCanvas.getContext('2d');
-
-            // Show badge
+        if (BG_MODE === 'black') {
+            targetBox.classList.add('bg-mask-black');
+            vignetteOverlay.classList.add('bg-hidden');
             bgModeBadge.classList.add('active');
-            bgModeBadge.textContent = BG_MODE === 'black' ? '● Black BG' : '● Transparent BG';
-
-            renderBgMask();
+            bgModeBadge.textContent = '● Black BG';
+        } else if (BG_MODE === 'transparent') {
+            targetBox.classList.add('bg-mask-transparent');
+            vignetteOverlay.classList.add('bg-hidden');
+            bgModeBadge.classList.add('active');
+            bgModeBadge.textContent = '● Transparent BG';
         }
-
-        function renderBgMask() {
-            if (BG_MODE === 'off' || !bgMaskCtx) return;
-
-            const vw = vid.videoWidth;
-            const vh = vid.videoHeight;
-            if (!vw || !vh) {
-                bgAnimFrame = requestAnimationFrame(renderBgMask);
-                return;
-            }
-
-            // Match canvas size to container
-            const container = document.getElementById('video-container');
-            const cw = container.clientWidth;
-            const ch = container.clientHeight;
-            if (bgMaskCanvas.width !== cw || bgMaskCanvas.height !== ch) {
-                bgMaskCanvas.width = cw;
-                bgMaskCanvas.height = ch;
-            }
-
-            const ctx = bgMaskCtx;
-
-            // Calculate where video is rendered (object-fit: contain)
-            const videoAspect = vw / vh;
-            const containerAspect = cw / ch;
-            let drawW, drawH, drawX, drawY;
-            if (videoAspect > containerAspect) {
-                drawW = cw;
-                drawH = cw / videoAspect;
-                drawX = 0;
-                drawY = (ch - drawH) / 2;
-            } else {
-                drawH = ch;
-                drawW = ch * videoAspect;
-                drawX = (cw - drawW) / 2;
-                drawY = 0;
-            }
-
-            // Get target box position (the reticle)
-            const tRect = targetBox.getBoundingClientRect();
-            const cx = tRect.left + tRect.width / 2;
-            const cy = tRect.top + tRect.height / 2;
-            const rx = tRect.width / 2 * 0.85;  // Slight inset for oval
-            const ry = tRect.height / 2 * 0.85;
-
-            // Clear canvas
-            ctx.clearRect(0, 0, cw, ch);
-
-            if (BG_MODE === 'black') {
-                // Draw the mirrored video first
-                ctx.save();
-                ctx.translate(cw, 0);
-                ctx.scale(-1, 1);
-                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
-                ctx.restore();
-
-                // Now mask: draw black outside the oval
-                ctx.save();
-                ctx.globalCompositeOperation = 'destination-in';
-                ctx.beginPath();
-                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
-
-                // Draw feathered edge around oval
-                ctx.save();
-                ctx.globalCompositeOperation = 'destination-over';
-                ctx.fillStyle = '#000';
-                ctx.fillRect(0, 0, cw, ch);
-                ctx.restore();
-
-            } else if (BG_MODE === 'transparent') {
-                // Semi-transparent: show video everywhere but darken outside oval
-                ctx.save();
-                ctx.translate(cw, 0);
-                ctx.scale(-1, 1);
-                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
-                ctx.restore();
-
-                // Dark overlay outside oval
-                ctx.save();
-                ctx.globalCompositeOperation = 'source-atop';
-
-                // Draw darkening layer everywhere
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
-                ctx.fillRect(0, 0, cw, ch);
-
-                // Cut the oval back to clear (reveal original video in oval)
-                ctx.globalCompositeOperation = 'destination-out';
-                ctx.beginPath();
-                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.restore();
-
-                // Re-draw video inside oval only
-                ctx.save();
-                ctx.beginPath();
-                ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-                ctx.clip();
-                ctx.translate(cw, 0);
-                ctx.scale(-1, 1);
-                ctx.drawImage(vid, drawX, drawY, drawW, drawH);
-                ctx.restore();
-            }
-
-            bgAnimFrame = requestAnimationFrame(renderBgMask);
-        }
-
-        // Init bg mask when video is ready
-        vid.addEventListener('loadeddata', () => {
-            if (BG_MODE !== 'off') {
-                // Hide the raw video element since canvas replaces it
-                vid.style.opacity = '0';
-                vid.style.position = 'absolute';
-                setTimeout(initBgMask, 100);
-            }
-        });
 
         // Debug toggle with D key
         document.addEventListener('keydown', (e) => {
@@ -562,6 +443,10 @@
             
             targetBox.className = "target-container";
             statusPanel.className = "status-panel";
+
+            // Preserve bg mask class
+            if (BG_MODE === 'black') targetBox.classList.add('bg-mask-black');
+            else if (BG_MODE === 'transparent') targetBox.classList.add('bg-mask-transparent');
 
             if (state === 'scanning') {
                 targetBox.classList.add("scanning");

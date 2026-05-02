@@ -90,7 +90,7 @@ Replace `<YOUR_USERNAME>` and `<TUNNEL_ID>` with your actual values.
 
 ### Terminal 1 — Start SmartFace AI:
 ```powershell
-cd A:\Smart-Attendance-System
+cd A:\projects\Smart-Attendance-System
 python app.py
 ```
 
@@ -109,7 +109,7 @@ If you just want a quick test without a domain:
 
 ```powershell
 # Terminal 1: Start Flask
-cd A:\Smart-Attendance-System
+cd A:\projects\Smart-Attendance-System
 python app.py
 
 # Terminal 2: Quick tunnel (random URL)

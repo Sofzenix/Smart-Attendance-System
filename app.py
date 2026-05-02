@@ -10,7 +10,11 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from config import Config
 from database.db import get_db_connection, init_db, get_setting, set_setting
-from utils.face_utils import register_face, recognize_face_with_liveness
+from utils.face_utils import (
+    MIN_AUTH_ANTI_SPOOF_SCORE,
+    register_face,
+    recognize_face_with_liveness,
+)
 from utils.validators import (
     validate_registration, validate_profile_update, validate_name,
     validate_employee_id, validate_email, validate_phone, validate_password,
@@ -830,8 +834,8 @@ def api_recognize_face():
             if not user_info:
                 return jsonify({"success": False, "recognized": False, "msg": "User not found."})
 
-            # Anti-spoof threshold (v3: 7-signal screen detection, 40 catches phones/screens)
-            if anti_spoof_score < 40:
+            # Security-first anti-spoof gate. Prefer a retry over a false accept.
+            if anti_spoof_score < MIN_AUTH_ANTI_SPOOF_SCORE or not spoof_checks.get("screen_clear", True):
                 failed = [k.replace('_', ' ').title() for k, v in spoof_checks.items() if not v]
                 fail_reason = f"Failed checks: {', '.join(failed)}" if failed else "Liveness not verified"
                 return jsonify({

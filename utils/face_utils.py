@@ -50,6 +50,16 @@ ARCFACE_REF = np.array([
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
+# Security-first thresholds. These deliberately favor "try again" over
+# ever mapping an unknown face/photo/video to a registered employee.
+MATCH_THRESHOLD = 0.58
+MATCH_MARGIN = 0.06
+MIN_FACE_AREA_RATIO = 0.035
+MIN_REGISTRATION_FACE_AREA_RATIO = 0.045
+MIN_REGISTRATION_DEPTH_SCORE = 28
+MIN_REGISTRATION_SHARPNESS = 85
+MIN_AUTH_ANTI_SPOOF_SCORE = 55
+
 
 # ============================================================
 #  MODEL DOWNLOAD
@@ -126,8 +136,8 @@ _mp_face_mesh = mp.solutions.face_mesh
 _face_mesh = _mp_face_mesh.FaceMesh(
     max_num_faces=2,       # detect up to 2 to catch multi-face
     refine_landmarks=True, # enable iris landmarks (478 total)
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    min_detection_confidence=0.65,
+    min_tracking_confidence=0.65
 )
 print("[SmartFace] ✅ MediaPipe Face Mesh ready (478 landmarks + iris)")
 
@@ -284,6 +294,20 @@ def _get_face_bbox(landmarks, w, h):
     return max(0, x1 - pad_x), max(0, y1 - pad_y), min(w, x2 + pad_x), min(h, y2 + pad_y)
 
 
+def _face_area_ratio(face_bbox, w, h):
+    """Return face bounding-box area relative to the full frame."""
+    x1, y1, x2, y2 = face_bbox
+    return max(0, x2 - x1) * max(0, y2 - y1) / float(max(1, w * h))
+
+
+def _laplacian_sharpness(gray_roi):
+    """Estimate crop sharpness; low values are blurry or re-captured screens."""
+    if gray_roi is None or gray_roi.size == 0:
+        return 0.0
+    resized = cv2.resize(gray_roi, (128, 128))
+    return float(np.var(cv2.Laplacian(resized, cv2.CV_64F)))
+
+
 # ============================================================
 #  LIVENESS DETECTION (MediaPipe Face Mesh)
 # ============================================================
@@ -368,6 +392,12 @@ def compute_liveness_metrics(img_bgr, mesh_results):
     metrics["depth_score"] = int(analyze_3d_depth(lms))
 
     return metrics
+
+
+def _has_natural_face_pose(liveness):
+    """Reject extreme angles where embeddings become unreliable."""
+    yaw = abs(float(liveness.get("head_yaw", 0.0)))
+    return yaw <= 0.18
 
 
 # ============================================================
@@ -639,9 +669,43 @@ def register_face(user_id, base64_img):
     if not results.multi_face_landmarks:
         return False
 
+    if len(results.multi_face_landmarks) != 1:
+        print("[Register] Registration rejected: frame must contain exactly one face")
+        return False
+
     lms = results.multi_face_landmarks[0].landmark
 
     # Align face to 112×112
+    liveness = compute_liveness_metrics(img, results)
+    face_bbox = _get_face_bbox(lms, w, h)
+    x1, y1, x2, y2 = face_bbox
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    face_roi_gray = gray[y1:y2, x1:x2]
+    face_area = _face_area_ratio(face_bbox, w, h)
+    sharpness = _laplacian_sharpness(face_roi_gray)
+    anti_spoof_score, screen_detected = compute_anti_spoof_score(
+        liveness.get("depth_score", 0),
+        face_roi_gray,
+        img,
+        face_bbox
+    )
+
+    if face_area < MIN_REGISTRATION_FACE_AREA_RATIO:
+        print(f"[Register] Rejected: face too small ({face_area:.3f})")
+        return False
+    if sharpness < MIN_REGISTRATION_SHARPNESS:
+        print(f"[Register] Rejected: blurry face crop ({sharpness:.0f})")
+        return False
+    if liveness.get("depth_score", 0) < MIN_REGISTRATION_DEPTH_SCORE:
+        print(f"[Register] Rejected: weak 3D depth ({liveness.get('depth_score', 0)})")
+        return False
+    if screen_detected or anti_spoof_score < MIN_AUTH_ANTI_SPOOF_SCORE:
+        print(f"[Register] Rejected: possible spoof (score={anti_spoof_score}, screen={screen_detected})")
+        return False
+    if not _has_natural_face_pose(liveness):
+        print(f"[Register] Rejected: face angle too large (yaw={liveness.get('head_yaw')})")
+        return False
+
     aligned = _align_face(img, lms, w, h)
     if aligned is None:
         return False
@@ -691,13 +755,14 @@ def _find_best_match(query_embedding):
     """
     cache = _ensure_cache()
     if not cache:
-        return None, 0.0
+        return None, 0.0, 0.0
 
     query = np.array(query_embedding, dtype=np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
     best_user = None
     best_sim = 0.0
+    second_best_sim = 0.0
 
     for user_id, stored_embs in cache.items():
         norms = np.linalg.norm(stored_embs, axis=1, keepdims=True)
@@ -705,10 +770,13 @@ def _find_best_match(query_embedding):
         sims = normalized @ query_norm
         max_sim = float(np.max(sims))
         if max_sim > best_sim:
+            second_best_sim = best_sim
             best_sim = max_sim
             best_user = user_id
+        elif max_sim > second_best_sim:
+            second_best_sim = max_sim
 
-    return best_user, best_sim
+    return best_user, best_sim, second_best_sim
 
 
 def recognize_face_with_liveness(base64_img):
@@ -750,6 +818,8 @@ def recognize_face_with_liveness(base64_img):
         x1, y1, x2, y2 = _get_face_bbox(lms, w, h)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         face_roi_gray = gray[y1:y2, x1:x2]
+        face_area = _face_area_ratio((x1, y1, x2, y2), w, h)
+        sharpness = _laplacian_sharpness(face_roi_gray)
 
         anti_spoof_score, screen_detected = compute_anti_spoof_score(
             liveness.get("depth_score", 50),
@@ -759,11 +829,22 @@ def recognize_face_with_liveness(base64_img):
         )
 
         spoof_checks = {
-            "3d_depth": bool(liveness.get("depth_score", 0) > 25),
+            "3d_depth": bool(liveness.get("depth_score", 0) >= MIN_REGISTRATION_DEPTH_SCORE),
             "face_mesh": bool(liveness.get("face_mesh_detected", False)),
-            "texture": bool(anti_spoof_score > 30),
-            "screen_detected": bool(screen_detected),
+            "texture": bool(anti_spoof_score >= MIN_AUTH_ANTI_SPOOF_SCORE),
+            "screen_clear": bool(not screen_detected),
+            "face_size": bool(face_area >= MIN_FACE_AREA_RATIO),
+            "sharpness": bool(sharpness >= MIN_REGISTRATION_SHARPNESS),
+            "natural_pose": bool(_has_natural_face_pose(liveness)),
         }
+
+        liveness["face_area"] = round(float(face_area), 4)
+        liveness["sharpness"] = int(sharpness)
+
+        if not spoof_checks["face_size"] or not spoof_checks["sharpness"] or not spoof_checks["natural_pose"]:
+            print(f"[Pipeline] REJECT quality face_area={face_area:.3f} "
+                  f"sharpness={sharpness:.0f} yaw={liveness.get('head_yaw', 0)}")
+            return None, liveness, 0, anti_spoof_score, spoof_checks
 
         # --- ArcFace alignment + embedding ---
         if _arcface_session is None:
@@ -778,20 +859,30 @@ def recognize_face_with_liveness(base64_img):
             return None, liveness, 0, anti_spoof_score, spoof_checks
 
         # --- Match ---
-        user_id, similarity = _find_best_match(embedding)
+        user_id, similarity, second_similarity = _find_best_match(embedding)
 
-        MATCH_THRESHOLD = 0.40
         confidence = int(max(0, similarity) * 100)
+        liveness["second_best_confidence"] = int(max(0, second_similarity) * 100)
+        liveness["match_margin"] = round(float(similarity - second_similarity), 3)
 
         t_total = int((time.time() - t_start) * 1000)
 
-        if user_id is not None and similarity >= MATCH_THRESHOLD:
+        strong_identity = (
+            user_id is not None
+            and similarity >= MATCH_THRESHOLD
+            and (similarity - second_similarity) >= MATCH_MARGIN
+        )
+
+        if strong_identity:
             print(f"[Pipeline] {t_total}ms | MATCH user={user_id} "
-                  f"sim={similarity:.3f} depth={liveness.get('depth_score', 0)} "
+                  f"sim={similarity:.3f} second={second_similarity:.3f} "
+                  f"depth={liveness.get('depth_score', 0)} "
                   f"spoof={anti_spoof_score}")
             return user_id, liveness, confidence, anti_spoof_score, spoof_checks
 
-        print(f"[Pipeline] {t_total}ms | NO MATCH (best_sim={similarity:.3f})")
+        print(f"[Pipeline] {t_total}ms | NO MATCH "
+              f"(best_sim={similarity:.3f}, second={second_similarity:.3f}, "
+              f"margin={similarity - second_similarity:.3f})")
         return None, liveness, confidence, anti_spoof_score, spoof_checks
 
     except Exception as e:

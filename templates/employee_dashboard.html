@@ -131,11 +131,9 @@
                     </div>
                 </div>
 
-                {% if not user['face_registered'] %}
-                <button onclick="document.getElementById('faceModal').style.display='flex'" style="margin-top:0.85rem; width:100%; padding:0.65rem; background:linear-gradient(135deg, var(--accent-emerald), #059669); color:#fff; border:none; border-radius:10px; font-weight:700; font-size:0.82rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:0.5rem; transition:all 0.2s; box-shadow:0 4px 15px rgba(16,185,129,0.2);">
-                    <i class="fa-solid fa-camera"></i> Register Biometrics
+                <button onclick="{% if user['face_registered'] %}resetAndRetrainFace(){% else %}document.getElementById('faceModal').style.display='flex'{% endif %}" style="margin-top:0.85rem; width:100%; padding:0.65rem; background:linear-gradient(135deg, var(--accent-emerald), #059669); color:#fff; border:none; border-radius:10px; font-weight:700; font-size:0.82rem; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:0.5rem; transition:all 0.2s; box-shadow:0 4px 15px rgba(16,185,129,0.2);">
+                    <i class="fa-solid fa-camera"></i> {% if user['face_registered'] %}Retrain Face ID{% else %}Register Biometrics{% endif %}
                 </button>
-                {% endif %}
             </div>
         </div>
 
@@ -193,7 +191,7 @@
 <div id="faceModal" style="position:fixed; inset:0; background:rgba(6,9,17,0.92); backdrop-filter:blur(20px); z-index:100; display:none; align-items:center; justify-content:center;">
     <div style="background:var(--bg-sidebar); border:1px solid var(--border); padding:2rem; border-radius:20px; width:100%; max-width:560px;">
         <h2 style="font-size:1.4rem; font-weight:800; color:var(--text-primary); margin-bottom:0.4rem;">Facial Registration</h2>
-        <p style="color:var(--text-muted); margin-bottom:1.25rem; font-size:0.82rem;">Look directly at the camera. We'll capture multiple samples for accuracy.</p>
+        <p style="color:var(--text-muted); margin-bottom:1.25rem; font-size:0.82rem;">Look directly at the camera, then slowly turn left, right, up, and back to center. We'll build a stronger face profile.</p>
         
         <div style="position:relative; width:100%; aspect-ratio:16/10; border-radius:16px; overflow:hidden; border:2px solid rgba(16,185,129,0.15); background:#000;">
             <video id="videoElement" autoplay muted playsinline style="width:100%; height:100%; object-fit:cover; transform:scaleX(-1);"></video>
@@ -210,11 +208,11 @@
             </div>
 
             <!-- Sample counter -->
-            <div id="sampleCounter" style="position:absolute; bottom:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); backdrop-filter:blur(10px); padding:4px 12px; border-radius:20px; font-size:0.72rem; font-weight:600; color:var(--accent-cyan); z-index:15;">Sample 0/5</div>
+            <div id="sampleCounter" style="position:absolute; bottom:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); backdrop-filter:blur(10px); padding:4px 12px; border-radius:20px; font-size:0.72rem; font-weight:600; color:var(--accent-cyan); z-index:15;">Sample 0/8</div>
         </div>
 
         <p id="regInstruction" style="color:var(--accent-cyan); font-weight:600; font-size:0.82rem; margin-top:1rem; display:flex; align-items:center; justify-content:center; gap:0.5rem;">
-            <i class="fa-solid fa-camera" style="animation:pulse-glow 1.5s infinite;"></i> Auto-capture active. Hold still.
+            <i class="fa-solid fa-camera" style="animation:pulse-glow 1.5s infinite;"></i> Auto-capture active. Follow the pose prompts.
         </p>
         
         <button type="button" onclick="closeModal()" style="margin-top:1rem; background:rgba(255,255,255,0.04); border:1px solid var(--border); color:var(--text-secondary); padding:0.5rem 1.5rem; border-radius:10px; cursor:pointer; font-weight:600; font-size:0.8rem; font-family:inherit;">Cancel</button>
@@ -295,7 +293,17 @@
     let streamActive = false;
     let autoCaptureInterval = null;
     let sampleCount = 0;
-    const MAX_SAMPLES = 5;
+    const MAX_SAMPLES = 8;
+    const REG_POSES = [
+        'Face center',
+        'Slightly turn left',
+        'Slightly turn right',
+        'Look a little up',
+        'Look a little down',
+        'Move closer',
+        'Move back',
+        'Face center again'
+    ];
     
     function closeModal() {
         document.getElementById('faceModal').style.display = 'none';
@@ -318,6 +326,27 @@
     
     const faceModal = document.getElementById('faceModal');
     if (faceModal) modalObserver.observe(faceModal, { attributes: true, attributeFilter: ['style'] });
+
+    async function resetAndRetrainFace() {
+        const ok = confirm('Clear your current face profile and retrain with fresh samples?');
+        if (!ok) return;
+
+        try {
+            const response = await fetch("{{ url_for('api_reset_my_face') }}", {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const result = await response.json();
+            if (!result.success) {
+                alert(result.msg || 'Could not reset face profile.');
+                return;
+            }
+            document.getElementById('faceModal').style.display = 'flex';
+        } catch (err) {
+            alert('Network error. Please try again.');
+        }
+    }
 
     async function captureSample() {
         const base64Img = captureFrame("videoElement");
@@ -343,7 +372,8 @@
             if (result.success) {
                 sampleCount++;
                 counter.innerText = `Sample ${sampleCount}/${MAX_SAMPLES}`;
-                instruction.innerHTML = `<i class="fa-solid fa-check" style="color:var(--accent-emerald);"></i> Sample ${sampleCount} captured! ${sampleCount < MAX_SAMPLES ? 'Slightly move your head...' : 'Complete!'}`;
+                const nextPose = REG_POSES[Math.min(sampleCount, REG_POSES.length - 1)];
+                instruction.innerHTML = `<i class="fa-solid fa-check" style="color:var(--accent-emerald);"></i> Sample ${sampleCount} captured! ${sampleCount < MAX_SAMPLES ? nextPose : 'Complete!'}`;
                 instruction.style.color = 'var(--accent-emerald)';
                 
                 if (sampleCount >= MAX_SAMPLES) {

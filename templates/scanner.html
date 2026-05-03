@@ -367,6 +367,8 @@
         let isProc = false;
         let eyeWasClosed = false;
         let blinkDetected = false;
+        let earOpenBaseline = null;
+        let closedFrameStreak = 0;
         let frameCount = 0;
         let consecutiveRecognitions = 0;
         let lastRecognizedUser = null;
@@ -430,6 +432,40 @@
             
             blinkCounter.innerText = blinkDetected ? "✓ LIVE" : "LIVE";
             blinkCounter.style.color = blinkDetected ? '#10b981' : '#f59e0b';
+        }
+
+        function resetBlinkState() {
+            eyeWasClosed = false;
+            blinkDetected = false;
+            earOpenBaseline = null;
+            closedFrameStreak = 0;
+        }
+
+        function updateBlinkFromMetrics(metrics) {
+            const ear = Number(metrics.ear || 0);
+            if (!ear) return;
+
+            if (!metrics.eyes_closed && ear > 0.16) {
+                earOpenBaseline = earOpenBaseline === null
+                    ? ear
+                    : (earOpenBaseline * 0.85 + ear * 0.15);
+            }
+
+            const adaptiveThreshold = earOpenBaseline
+                ? Math.max(0.16, Math.min(0.24, earOpenBaseline * 0.72))
+                : 0.20;
+            const closedNow = metrics.eyes_closed || ear < adaptiveThreshold;
+
+            if (closedNow) {
+                closedFrameStreak++;
+                if (closedFrameStreak >= 1) eyeWasClosed = true;
+            } else {
+                if (eyeWasClosed && closedFrameStreak >= 1) {
+                    blinkDetected = true;
+                }
+                closedFrameStreak = 0;
+                eyeWasClosed = false;
+            }
         }
 
         function setCamStatus(title, desc, state) {
@@ -520,7 +556,7 @@
                         pollInterval = 300;
                     } else if(res.spoofing_detected) {
                         setCamStatus("⚠️ Spoof Detected", res.msg || "Live presence required.", "alert");
-                        eyeWasClosed = false; blinkDetected = false;
+                        resetBlinkState();
                         consecutiveRecognitions = 0;
                         lastRecognizedUser = null;
                         pollInterval = 300;
@@ -543,14 +579,7 @@
                         // The backend challenge 'turn_left' expects yaw < -0.12
                         // which means: user turns LEFT as they see it on screen ✓
                         if (challenge === 'blink') {
-                            if (!blinkDetected) {
-                                if (metrics.eyes_closed && !eyeWasClosed) {
-                                    eyeWasClosed = true;
-                                } else if (!metrics.eyes_closed && eyeWasClosed) {
-                                    blinkDetected = true;
-                                    eyeWasClosed = false;
-                                }
-                            }
+                            updateBlinkFromMetrics(metrics);
                         } else if (challenge === 'turn_left') {
                             // Backend says turn_left → yaw < -0.12
                             // In mirror view: user's left = yaw negative ✓
@@ -571,7 +600,7 @@
                             setCamStatus(avatar + `<div>Access Granted</div>`, `<span style='color:#34d399; font-weight:700; font-size:1.05rem;'>${res.msg}</span>`, "success");
                             
                             setTimeout(() => {
-                                eyeWasClosed = false; blinkDetected = false; isProc = false;
+                                resetBlinkState(); isProc = false;
                                 consecutiveRecognitions = 0; lastRecognizedUser = null;
                                 setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
                                 pollInterval = 300;
@@ -606,7 +635,7 @@
                             "⚠️ Please <a href='{{ url_for('login') }}' style='color:#10b981; font-weight:bold;'>Register</a> first.",
                             "unregistered"
                         );
-                        eyeWasClosed = false; blinkDetected = false;
+                        resetBlinkState();
                         consecutiveRecognitions = 0; lastRecognizedUser = null;
                         pollInterval = 500;
                         setTimeout(() => {
@@ -617,7 +646,7 @@
                         return;
                     } else {
                         setCamStatus("Awaiting Subject", "Please look directly at the camera", "normal");
-                        eyeWasClosed = false; blinkDetected = false;
+                        resetBlinkState();
                         consecutiveRecognitions = 0; lastRecognizedUser = null;
                         pollInterval = 400;  // Slower when no face detected
                     }

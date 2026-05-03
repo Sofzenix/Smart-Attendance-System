@@ -52,13 +52,14 @@ RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
 # Security-first thresholds. These deliberately favor "try again" over
 # ever mapping an unknown face/photo/video to a registered employee.
-MATCH_THRESHOLD = 0.58
-MATCH_MARGIN = 0.06
+MATCH_THRESHOLD = 0.54
+MATCH_MARGIN = 0.025
+HIGH_CONFIDENCE_MATCH_THRESHOLD = 0.68
 MIN_FACE_AREA_RATIO = 0.035
-MIN_REGISTRATION_FACE_AREA_RATIO = 0.045
-MIN_REGISTRATION_DEPTH_SCORE = 28
-MIN_REGISTRATION_SHARPNESS = 85
-MIN_AUTH_ANTI_SPOOF_SCORE = 55
+MIN_REGISTRATION_FACE_AREA_RATIO = 0.035
+MIN_REGISTRATION_DEPTH_SCORE = 18
+MIN_REGISTRATION_SHARPNESS = 55
+MIN_AUTH_ANTI_SPOOF_SCORE = 45
 
 
 # ============================================================
@@ -283,6 +284,20 @@ def _get_embedding(aligned_face):
     return embedding
 
 
+def _embedding_variants(aligned_face):
+    """Generate small, label-preserving crops so one sample trains like several looks."""
+    variants = [aligned_face]
+    variants.append(cv2.convertScaleAbs(aligned_face, alpha=1.08, beta=8))
+    variants.append(cv2.convertScaleAbs(aligned_face, alpha=0.92, beta=-6))
+
+    h, w = aligned_face.shape[:2]
+    for shift_x in (-4, 4):
+        M = np.float32([[1, 0, shift_x], [0, 1, 0]])
+        variants.append(cv2.warpAffine(aligned_face, M, (w, h), borderMode=cv2.BORDER_REFLECT_101))
+
+    return variants
+
+
 def _get_face_bbox(landmarks, w, h):
     """Compute face bounding box from MediaPipe landmarks."""
     xs = [lm.x * w for lm in landmarks]
@@ -394,10 +409,10 @@ def compute_liveness_metrics(img_bgr, mesh_results):
     return metrics
 
 
-def _has_natural_face_pose(liveness):
+def _has_natural_face_pose(liveness, max_yaw=0.24):
     """Reject extreme angles where embeddings become unreliable."""
     yaw = abs(float(liveness.get("head_yaw", 0.0)))
-    return yaw <= 0.18
+    return yaw <= max_yaw
 
 
 # ============================================================
@@ -702,7 +717,7 @@ def register_face(user_id, base64_img):
     if screen_detected or anti_spoof_score < MIN_AUTH_ANTI_SPOOF_SCORE:
         print(f"[Register] Rejected: possible spoof (score={anti_spoof_score}, screen={screen_detected})")
         return False
-    if not _has_natural_face_pose(liveness):
+    if not _has_natural_face_pose(liveness, max_yaw=0.34):
         print(f"[Register] Rejected: face angle too large (yaw={liveness.get('head_yaw')})")
         return False
 
@@ -710,9 +725,15 @@ def register_face(user_id, base64_img):
     if aligned is None:
         return False
 
-    # Extract 512-D embedding
-    embedding = _get_embedding(aligned)
-    if embedding is None:
+    # Extract several 512-D embeddings from one live frame. These tiny
+    # augmentations improve tolerance to lighting, glasses glare, and hair drift.
+    new_embeddings = []
+    for variant in _embedding_variants(aligned):
+        embedding = _get_embedding(variant)
+        if embedding is not None:
+            new_embeddings.append(embedding.tolist())
+
+    if not new_embeddings:
         return False
 
     # Store in database
@@ -726,9 +747,9 @@ def register_face(user_id, base64_img):
         except Exception:
             existing = []
 
-    existing.append(embedding.tolist())
+    existing.extend(new_embeddings)
 
-    MAX_EMBEDDINGS = 15
+    MAX_EMBEDDINGS = 45
     if len(existing) > MAX_EMBEDDINGS:
         existing = existing[-MAX_EMBEDDINGS:]
 
@@ -755,13 +776,14 @@ def _find_best_match(query_embedding):
     """
     cache = _ensure_cache()
     if not cache:
-        return None, 0.0, 0.0
+        return None, 0.0, 0.0, 0.0, 0
 
     query = np.array(query_embedding, dtype=np.float32)
     query_norm = query / (np.linalg.norm(query) + 1e-10)
 
     best_user = None
     best_sim = 0.0
+    best_stable_sim = 0.0
     second_best_sim = 0.0
 
     for user_id, stored_embs in cache.items():
@@ -769,14 +791,19 @@ def _find_best_match(query_embedding):
         normalized = stored_embs / (norms + 1e-10)
         sims = normalized @ query_norm
         max_sim = float(np.max(sims))
-        if max_sim > best_sim:
-            second_best_sim = best_sim
-            best_sim = max_sim
-            best_user = user_id
-        elif max_sim > second_best_sim:
-            second_best_sim = max_sim
+        top_k = min(5, sims.size)
+        stable_sim = float(np.mean(np.sort(sims)[-top_k:])) if top_k else max_sim
+        user_score = max(max_sim, stable_sim + 0.015)
 
-    return best_user, best_sim, second_best_sim
+        if user_score > best_sim:
+            second_best_sim = best_sim
+            best_sim = user_score
+            best_stable_sim = stable_sim
+            best_user = user_id
+        elif user_score > second_best_sim:
+            second_best_sim = user_score
+
+    return best_user, best_sim, second_best_sim, best_stable_sim, len(cache)
 
 
 def recognize_face_with_liveness(base64_img):
@@ -859,18 +886,20 @@ def recognize_face_with_liveness(base64_img):
             return None, liveness, 0, anti_spoof_score, spoof_checks
 
         # --- Match ---
-        user_id, similarity, second_similarity = _find_best_match(embedding)
+        user_id, similarity, second_similarity, stable_similarity, enrolled_users = _find_best_match(embedding)
 
         confidence = int(max(0, similarity) * 100)
+        liveness["stable_confidence"] = int(max(0, stable_similarity) * 100)
         liveness["second_best_confidence"] = int(max(0, second_similarity) * 100)
         liveness["match_margin"] = round(float(similarity - second_similarity), 3)
 
         t_total = int((time.time() - t_start) * 1000)
 
-        strong_identity = (
-            user_id is not None
-            and similarity >= MATCH_THRESHOLD
-            and (similarity - second_similarity) >= MATCH_MARGIN
+        margin = similarity - second_similarity
+        strong_identity = user_id is not None and (
+            (enrolled_users <= 1 and similarity >= MATCH_THRESHOLD)
+            or (similarity >= HIGH_CONFIDENCE_MATCH_THRESHOLD and margin >= 0.005)
+            or (similarity >= MATCH_THRESHOLD and margin >= MATCH_MARGIN)
         )
 
         if strong_identity:
@@ -881,8 +910,8 @@ def recognize_face_with_liveness(base64_img):
             return user_id, liveness, confidence, anti_spoof_score, spoof_checks
 
         print(f"[Pipeline] {t_total}ms | NO MATCH "
-              f"(best_sim={similarity:.3f}, second={second_similarity:.3f}, "
-              f"margin={similarity - second_similarity:.3f})")
+              f"(best_sim={similarity:.3f}, stable={stable_similarity:.3f}, "
+              f"second={second_similarity:.3f}, margin={margin:.3f})")
         return None, liveness, confidence, anti_spoof_score, spoof_checks
 
     except Exception as e:

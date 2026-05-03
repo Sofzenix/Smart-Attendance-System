@@ -803,6 +803,25 @@ def api_register_face():
     return jsonify({"success": True, "msg": "Face registered successfully!"})
 
 
+@app.route("/api/reset_my_face", methods=["POST"])
+def api_reset_my_face():
+    if "user_id" not in session:
+        return jsonify({"success": False, "msg": "Unauthorized"}), 401
+
+    conn = get_db_connection()
+    conn.execute(
+        "UPDATE users SET face_registered = 0, face_embedding = NULL WHERE id = ?",
+        (session["user_id"],)
+    )
+    conn.commit()
+    conn.close()
+
+    from utils.face_utils import invalidate_cache
+    invalidate_cache()
+
+    return jsonify({"success": True, "msg": "Face profile reset. Please retrain now."})
+
+
 @app.route("/api/recognize_face", methods=["POST"])
 def api_recognize_face():
     try:

@@ -822,6 +822,55 @@ def api_reset_my_face():
     return jsonify({"success": True, "msg": "Face profile reset. Please retrain now."})
 
 
+def _clear_face_challenge():
+    for key in (
+        'challenge_type',
+        'challenge_user',
+        'challenge_user_id',
+        'challenge_emp_id',
+        'challenge_department',
+        'challenge_confidence',
+        'challenge_neutral_seen',
+        'challenge_blink_closed_seen',
+    ):
+        session.pop(key, None)
+
+
+def _attendance_success_response(user_id, user_info, anti_spoof_score, confidence):
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    status = "Late" if is_late(time_str) else "Present"
+
+    conn = get_db_connection()
+    existing = conn.execute("SELECT id FROM attendance WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
+
+    if not existing:
+        conn.execute("INSERT INTO attendance (user_id, date, time, status, method) VALUES (?, ?, ?, ?, ?)",
+                     (user_id, date_str, time_str, status, 'Face Recognition'))
+        conn.commit()
+        conn.close()
+        msg = f"Access Granted. Attendance verified for {user_info['name']}"
+        payload = {"status": status, "time": time_str}
+    else:
+        conn.close()
+        msg = f"Welcome back, {user_info['name']}. Already checked in today."
+        payload = {}
+
+    _clear_face_challenge()
+    payload.update({
+        "success": True,
+        "recognized": True,
+        "msg": msg,
+        "user": user_info['name'],
+        "emp_id": user_info['employee_id'],
+        "department": user_info['department'],
+        "anti_spoof_score": anti_spoof_score,
+        "confidence": confidence,
+    })
+    return jsonify(payload)
+
+
 @app.route("/api/recognize_face", methods=["POST"])
 def api_recognize_face():
     try:
@@ -845,6 +894,42 @@ def api_recognize_face():
                 "multi_face": True
             })
 
+        pending_user_id = session.get('challenge_user_id')
+        pending_challenge = session.get('challenge_type')
+        if pending_user_id and pending_challenge == 'blink' and not user_id:
+            face_still_present = bool(liveness_metrics.get("face_mesh_detected")) or confidence > 0 or anti_spoof_score > 0
+            if face_still_present:
+                if liveness_metrics.get('eyes_closed'):
+                    session['challenge_blink_closed_seen'] = True
+                elif session.get('challenge_blink_closed_seen'):
+                    conn = get_db_connection()
+                    user_info = conn.execute(
+                        "SELECT name, employee_id, department FROM users WHERE id=?",
+                        (pending_user_id,)
+                    ).fetchone()
+                    conn.close()
+                    if user_info and anti_spoof_score >= 30 and spoof_checks.get("screen_clear", True):
+                        return _attendance_success_response(
+                            pending_user_id,
+                            user_info,
+                            anti_spoof_score,
+                            max(confidence, int(session.get('challenge_confidence', 0)))
+                        )
+
+                return jsonify({
+                    "success": False,
+                    "recognized": True,
+                    "liveness_metrics": liveness_metrics,
+                    "anti_spoof_score": anti_spoof_score,
+                    "spoof_checks": spoof_checks,
+                    "confidence": max(confidence, int(session.get('challenge_confidence', 0))),
+                    "challenge": "blink",
+                    "msg": f"{session.get('challenge_user', 'User')} - Blink once, then open your eyes",
+                    "user": session.get('challenge_user', 'User'),
+                    "emp_id": session.get('challenge_emp_id', ''),
+                    "department": session.get('challenge_department', ''),
+                })
+
         if user_id:
             conn = get_db_connection()
             user_info = conn.execute("SELECT name, employee_id, department FROM users WHERE id=?", (user_id,)).fetchone()
@@ -866,21 +951,35 @@ def api_recognize_face():
                     "msg": f"⚠️ Spoofing detected! ({fail_reason})"
                 })
 
-            # Liveness Challenge — RANDOM action to defeat video replay
-            # Videos can fake blinks but can't predict random challenges
-            challenge_types = ['blink', 'turn_left', 'turn_right']
-            if 'challenge_type' not in session or session.get('challenge_user') != user_info['name']:
+            # Liveness challenge: blink-only for webcam reliability.
+            challenge_types = ['blink']
+            if (
+                'challenge_type' not in session
+                or session.get('challenge_type') != 'blink'
+                or session.get('challenge_user') != user_info['name']
+            ):
                 session['challenge_type'] = random.choice(challenge_types)
                 session['challenge_user'] = user_info['name']
+                session['challenge_user_id'] = user_id
+                session['challenge_emp_id'] = user_info['employee_id']
+                session['challenge_department'] = user_info['department']
+                session['challenge_confidence'] = confidence
                 session['challenge_neutral_seen'] = False
+                session['challenge_blink_closed_seen'] = False
 
             challenge = session['challenge_type']
             head_yaw = liveness_metrics.get('head_yaw', 0)
 
             # Check if challenge completed
             challenge_passed = False
-            if challenge == 'blink' and liveness_verified:
-                challenge_passed = True
+            if challenge == 'blink':
+                if liveness_metrics.get('eyes_closed'):
+                    session['challenge_blink_closed_seen'] = True
+                if liveness_verified or (
+                    session.get('challenge_blink_closed_seen') and not liveness_metrics.get('eyes_closed')
+                ):
+                    challenge_passed = True
+                    session['challenge_blink_closed_seen'] = False
             elif challenge == 'turn_left':
                 # Must first face center, then turn left
                 if abs(head_yaw) < 0.08:
@@ -912,45 +1011,7 @@ def api_recognize_face():
                     "department": user_info['department']
                 })
 
-            # Challenge passed! Clear session
-            session.pop('challenge_type', None)
-            session.pop('challenge_user', None)
-            session.pop('challenge_neutral_seen', None)
-
-            now = datetime.now()
-            date_str = now.strftime("%Y-%m-%d")
-            time_str = now.strftime("%H:%M:%S")
-            status = "Late" if is_late(time_str) else "Present"
-
-            conn = get_db_connection()
-            existing = conn.execute("SELECT id FROM attendance WHERE user_id=? AND date=?", (user_id, date_str)).fetchone()
-
-            if not existing:
-                conn.execute("INSERT INTO attendance (user_id, date, time, status, method) VALUES (?, ?, ?, ?, ?)",
-                             (user_id, date_str, time_str, status, 'Face Recognition'))
-                conn.commit()
-                conn.close()
-                return jsonify({
-                    "success": True, "recognized": True,
-                    "msg": f"Access Granted. Attendance verified for {user_info['name']}",
-                    "user": user_info['name'],
-                    "emp_id": user_info['employee_id'],
-                    "department": user_info['department'],
-                    "status": status, "time": time_str,
-                    "anti_spoof_score": anti_spoof_score,
-                    "confidence": confidence
-                })
-            else:
-                conn.close()
-                return jsonify({
-                    "success": True, "recognized": True,
-                    "msg": f"Welcome back, {user_info['name']}. Already checked in today.",
-                    "user": user_info['name'],
-                    "emp_id": user_info['employee_id'],
-                    "department": user_info['department'],
-                    "anti_spoof_score": anti_spoof_score,
-                    "confidence": confidence
-                })
+            return _attendance_success_response(user_id, user_info, anti_spoof_score, confidence)
 
         # Face was detected and analyzed (anti_spoof ran) but not recognized
         if confidence > 0 or anti_spoof_score > 0:
@@ -961,6 +1022,21 @@ def api_recognize_face():
                 "confidence": confidence,
                 "spoof_checks": spoof_checks,
                 "msg": "Identity Unknown — Please register first"
+            })
+
+        if pending_user_id and pending_challenge == 'blink':
+            return jsonify({
+                "success": False,
+                "recognized": True,
+                "liveness_metrics": liveness_metrics,
+                "anti_spoof_score": anti_spoof_score,
+                "spoof_checks": spoof_checks,
+                "confidence": int(session.get('challenge_confidence', 0)),
+                "challenge": "blink",
+                "msg": f"{session.get('challenge_user', 'User')} - Keep your face centered and blink once",
+                "user": session.get('challenge_user', 'User'),
+                "emp_id": session.get('challenge_emp_id', ''),
+                "department": session.get('challenge_department', ''),
             })
 
         return jsonify({

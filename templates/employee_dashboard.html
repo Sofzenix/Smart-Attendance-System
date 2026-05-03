@@ -191,7 +191,7 @@
 <div id="faceModal" style="position:fixed; inset:0; background:rgba(6,9,17,0.92); backdrop-filter:blur(20px); z-index:100; display:none; align-items:center; justify-content:center;">
     <div style="background:var(--bg-sidebar); border:1px solid var(--border); padding:2rem; border-radius:20px; width:100%; max-width:560px;">
         <h2 style="font-size:1.4rem; font-weight:800; color:var(--text-primary); margin-bottom:0.4rem;">Facial Registration</h2>
-        <p style="color:var(--text-muted); margin-bottom:1.25rem; font-size:0.82rem;">Look directly at the camera, then slowly turn left, right, up, and back to center. We'll build a stronger face profile.</p>
+        <p style="color:var(--text-muted); margin-bottom:1.25rem; font-size:0.82rem;">Keep your face mostly centered. Use only tiny angle changes so both eyes stay visible while we build a stronger face profile.</p>
         
         <div style="position:relative; width:100%; aspect-ratio:16/10; border-radius:16px; overflow:hidden; border:2px solid rgba(16,185,129,0.15); background:#000;">
             <video id="videoElement" autoplay muted playsinline style="width:100%; height:100%; object-fit:cover; transform:scaleX(-1);"></video>
@@ -296,12 +296,12 @@
     const MAX_SAMPLES = 8;
     const REG_POSES = [
         'Face center',
-        'Slightly turn left',
-        'Slightly turn right',
-        'Look a little up',
-        'Look a little down',
-        'Move closer',
-        'Move back',
+        'Tiny look left, both eyes visible',
+        'Tiny look right, both eyes visible',
+        'Chin slightly up',
+        'Chin slightly down',
+        'Move a little closer',
+        'Move a little back',
         'Face center again'
     ];
     
@@ -383,7 +383,7 @@
                     return true;
                 }
             } else {
-                instruction.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> No face detected. Adjust position...';
+                instruction.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Face lost. Turn back toward center and keep both eyes visible...';
                 instruction.style.color = 'var(--accent-gold)';
             }
         } catch (err) {

@@ -137,8 +137,8 @@ _mp_face_mesh = mp.solutions.face_mesh
 _face_mesh = _mp_face_mesh.FaceMesh(
     max_num_faces=2,       # detect up to 2 to catch multi-face
     refine_landmarks=True, # enable iris landmarks (478 total)
-    min_detection_confidence=0.65,
-    min_tracking_confidence=0.65
+    min_detection_confidence=0.45,
+    min_tracking_confidence=0.45
 )
 print("[SmartFace] [OK] MediaPipe Face Mesh ready (478 landmarks + iris)")
 

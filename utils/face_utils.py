@@ -71,7 +71,7 @@ def _download_arcface_model():
     zip_path = os.path.join(MODELS_DIR, 'buffalo_l.zip')
 
     print("=" * 60)
-    print("  SmartFace AI — First-Time Model Download")
+    print("  SmartFace AI - First-Time Model Download")
     print("=" * 60)
     print(f"  Downloading ArcFace recognition model (~300 MB)...")
     print(f"  Source: {zip_url}")
@@ -86,7 +86,7 @@ def _download_arcface_model():
                 total_mb = total_size / (1024 * 1024)
                 bar_len = 40
                 filled = int(bar_len * pct / 100)
-                bar = "█" * filled + "░" * (bar_len - filled)
+                bar = "#" * filled + "-" * (bar_len - filled)
                 print(f"\r  [{bar}] {mb:.0f}/{total_mb:.0f} MB ({pct}%)", end="", flush=True)
 
         urllib.request.urlretrieve(zip_url, zip_path, reporthook=_progress)
@@ -109,15 +109,15 @@ def _download_arcface_model():
 
         if extracted:
             size_mb = os.path.getsize(ARCFACE_MODEL_PATH) / (1024 * 1024)
-            print(f"  ✅ ArcFace model ready! ({size_mb:.0f} MB)")
+            print(f"  [OK] ArcFace model ready! ({size_mb:.0f} MB)")
             print("=" * 60)
             return True
         else:
-            print("  ❌ Model file not found in archive!")
+            print("  [ERROR] Model file not found in archive!")
             return False
 
     except Exception as e:
-        print(f"\n  ❌ Download failed: {e}")
+        print(f"\n  [ERROR] Download failed: {e}")
         print(f"  Manual fix: Download buffalo_l.zip from the URL above,")
         print(f"  extract w600k_r50.onnx to: {MODELS_DIR}")
         if os.path.exists(zip_path):
@@ -139,7 +139,7 @@ _face_mesh = _mp_face_mesh.FaceMesh(
     min_detection_confidence=0.65,
     min_tracking_confidence=0.65
 )
-print("[SmartFace] ✅ MediaPipe Face Mesh ready (478 landmarks + iris)")
+print("[SmartFace] [OK] MediaPipe Face Mesh ready (478 landmarks + iris)")
 
 # --- ArcFace ONNX Recognition Model ---
 _arcface_session = None
@@ -153,11 +153,11 @@ if os.path.exists(ARCFACE_MODEL_PATH):
             ARCFACE_MODEL_PATH,
             providers=['CPUExecutionProvider']
         )
-        print("[SmartFace] ✅ ArcFace recognition model loaded (512-D embeddings)")
+        print("[SmartFace] [OK] ArcFace recognition model loaded (512-D embeddings)")
     except Exception as e:
-        print(f"[SmartFace] ❌ Failed to load ArcFace model: {e}")
+        print(f"[SmartFace] [ERROR] Failed to load ArcFace model: {e}")
 else:
-    print("[SmartFace] ⚠️  ArcFace model not available — recognition disabled")
+    print("[SmartFace] [WARN] ArcFace model not available - recognition disabled")
     print(f"[SmartFace]    Place w600k_r50.onnx in: {MODELS_DIR}")
 
 

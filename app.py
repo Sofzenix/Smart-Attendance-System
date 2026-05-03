@@ -71,7 +71,7 @@ try:
     )
     if email_enabled == '1':
         scheduler.start()
-        print(f"[Scheduler] Email notifications enabled — triggers at {trigger_hour}:{trigger_minute:02d}")
+        print(f"[Scheduler] Email notifications enabled - triggers at {trigger_hour}:{trigger_minute:02d}")
     else:
         print("[Scheduler] Email notifications disabled (enable in Settings)")
 except Exception as e:
